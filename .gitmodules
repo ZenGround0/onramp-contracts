@@ -7,3 +7,6 @@
 [submodule "lib/raas-starter-kit"]
 	path = lib/raas-starter-kit
 	url = https://github.com/lighthouse-web3/raas-starter-kit
+[submodule "lib/filecoin-solidity"]
+	path = lib/filecoin-solidity
+	url = https://github.com/filecoin-project/filecoin-solidity
