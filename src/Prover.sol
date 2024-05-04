@@ -35,12 +35,11 @@ struct ProviderSet {
     bool valid;
 }
 
-// User request for this contract to make a deal. This structure is modelled after Filecoin's Deal
-// Proposal, but leaves out the provider, since any provider can pick up a deal broadcast by this
-// contract.
+// User request for this contract to make a deal. 
 struct DealRequest {
     bytes piece_cid;
     int64 duration;
+    uint64 id;
 }
 
 contract DealClient is AxelarExecutable {
@@ -62,16 +61,13 @@ contract DealClient is AxelarExecutable {
         DealTerminated
     }
 
-    mapping(bytes32 => RequestIdx) public dealRequestIdx; // contract deal id -> deal index
     DealRequest[] public dealRequests;
 
-    mapping(bytes => RequestId) public pieceRequests; // commP -> dealProposalID
-    mapping(bytes => ProviderSet) public pieceProviders; // commP -> provider
+
     mapping(bytes => uint64) public pieceDeals; // commP -> deal ID
     mapping(bytes => Status) public pieceStatus;
 
     event ReceivedDataCap(string received);
-    event DealProposalCreate(bytes32 indexed id, uint64 size, bool indexed verified, uint256 price);
 
     address public owner;
 
@@ -79,22 +75,6 @@ contract DealClient is AxelarExecutable {
         gasService = IAxelarGasService(gasReciever_);
         owner = msg.sender;
     }
-
-    // function getProviderSet(bytes calldata cid) public view returns (ProviderSet memory) {
-    //     return pieceProviders[cid];
-    // }
-
-    // function getProposalIdSet(bytes calldata cid) public view returns (RequestId memory) {
-    //     return pieceRequests[cid];
-    // }
-
-    // function dealsLength() public view returns (uint256) {
-    //     return dealRequests.length;
-    // }
-
-    // function getDealByIndex(uint256 index) public view returns (DealRequest memory) {
-    //     return dealRequests[index];
-    // }
 
     function makeDealProposal(DealRequest memory deal) public returns (bytes32) {
         // require(msg.sender == owner);
@@ -112,9 +92,6 @@ contract DealClient is AxelarExecutable {
 
         pieceRequests[deal.piece_cid] = RequestId(id, true);
         pieceStatus[deal.piece_cid] = Status.RequestSubmitted;
-
-        // writes the proposal metadata to the event log
-        emit DealProposalCreate(id, deal.piece_size, deal.verified_deal, deal.storage_price_per_epoch);
 
         return id;
     }
@@ -144,26 +121,7 @@ contract DealClient is AxelarExecutable {
         return dealRequests[ri.idx];
     }
 
-    // Returns a CBOR-encoded DealProposal.
-    function getDealProposal(bytes32 proposalId) public view returns (bytes memory) {
-        DealRequest memory deal = getDealRequest(proposalId);
 
-        MarketTypes.DealProposal memory ret;
-        ret.piece_cid = CommonTypes.Cid(deal.piece_cid);
-        ret.piece_size = deal.piece_size;
-        ret.verified_deal = deal.verified_deal;
-        ret.client = FilAddresses.fromEthAddress(address(this));
-        // Set a dummy provider. The provider that picks up this deal will need to set its own address.
-        ret.provider = FilAddresses.fromActorID(0);
-        ret.label = CommonTypes.DealLabel(bytes(deal.label), true);
-        ret.start_epoch = CommonTypes.ChainEpoch.wrap(deal.start_epoch);
-        ret.end_epoch = CommonTypes.ChainEpoch.wrap(deal.end_epoch);
-        ret.storage_price_per_epoch = BigInts.fromUint256(deal.storage_price_per_epoch);
-        ret.provider_collateral = BigInts.fromUint256(deal.provider_collateral);
-        ret.client_collateral = BigInts.fromUint256(deal.client_collateral);
-
-        return MarketCBOR.serializeDealProposal(ret);
-    }
 
     function getExtraParams(bytes32 proposalId) public view returns (bytes memory extra_params) {
         DealRequest memory deal = getDealRequest(proposalId);
@@ -218,47 +176,6 @@ contract DealClient is AxelarExecutable {
         pieceStatus[proposal.piece_cid.data] = Status.DealPublished;
     }
 
-    // This function can be called/smartly polled to retrieve the deal activation status
-    // associated with provided pieceCid and update the contract state based on that
-    // info
-    // @pieceCid - byte representation of pieceCid
-    function updateActivationStatus(bytes memory pieceCid) public {
-        require(pieceDeals[pieceCid] > 0, 'no deal published for this piece cid');
-
-        MarketTypes.GetDealActivationReturn memory ret = MarketAPI.getDealActivation(pieceDeals[pieceCid]);
-        if (CommonTypes.ChainEpoch.unwrap(ret.terminated) > 0) {
-            pieceStatus[pieceCid] = Status.DealTerminated;
-        } else if (CommonTypes.ChainEpoch.unwrap(ret.activated) > 0) {
-            pieceStatus[pieceCid] = Status.DealActivated;
-        }
-    }
-
-    // addBalance funds the builtin storage market actor's escrow
-    // with funds from the contract's own balance
-    // @value - amount to be added in escrow in attoFIL
-    function addBalance(uint256 value) public {
-        require(msg.sender == owner);
-        MarketAPI.addBalance(FilAddresses.fromEthAddress(address(this)), value);
-    }
-
-    // This function attempts to withdraw the specified amount from the contract addr's escrow balance
-    // If less than the given amount is available, the full escrow balance is withdrawn
-    // @client - Eth address where the balance is withdrawn to. This can be the contract address or an external address
-    // @value - amount to be withdrawn in escrow in attoFIL
-    function withdrawBalance(address client, uint256 value) public returns (uint) {
-        require(msg.sender == owner);
-
-        MarketTypes.WithdrawBalanceParams memory params = MarketTypes.WithdrawBalanceParams(
-            FilAddresses.fromEthAddress(client),
-            BigInts.fromUint256(value)
-        );
-        CommonTypes.BigInt memory ret = MarketAPI.withdrawBalance(params);
-
-        (uint256 withdrawBalanceAmount, bool withdrawBalanceConverted) = BigInts.toUint256(ret);
-        require(withdrawBalanceConverted, 'Problems converting withdraw balance into Big Int, may cause an overflow');
-
-        return withdrawBalanceAmount;
-    }
 
     function receiveDataCap(bytes memory params) internal {
         require(msg.sender == DATACAP_ACTOR_ETH_ADDRESS, 'msg.sender needs to be datacap actor f07');
