@@ -1,1 +1,3 @@
-@zondax/=lib/raas-starter-kit/node_modules/@zondax/
+@zondax/solidity-bignumber=lib/filecoin-solidity/contracts/vendor/solidity-BigNumber
+filecoin-solidity/=/Users/zenground0/pl/repos/onramp-contracts/lib/filecoin-solidity/
+solidity-bignumber=lib/filecoin-solidity/contracts/vendor/solidity-BigNumber

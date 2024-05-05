@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
-import { MarketAPI } from '@zondax/filecoin-solidity/contracts/v0.8/MarketAPI.sol';
-import { CommonTypes } from '@zondax/filecoin-solidity/contracts/v0.8/types/CommonTypes.sol';
-import { MarketTypes } from '@zondax/filecoin-solidity/contracts/v0.8/types/MarketTypes.sol';
-import { AccountTypes } from '@zondax/filecoin-solidity/contracts/v0.8/types/AccountTypes.sol';
-import { CommonTypes } from '@zondax/filecoin-solidity/contracts/v0.8/types/CommonTypes.sol';
-import { AccountCBOR } from '@zondax/filecoin-solidity/contracts/v0.8/cbor/AccountCbor.sol';
-import { MarketCBOR } from '@zondax/filecoin-solidity/contracts/v0.8/cbor/MarketCbor.sol';
-import { BytesCBOR } from '@zondax/filecoin-solidity/contracts/v0.8/cbor/BytesCbor.sol';
-import { BigNumbers, BigNumber } from '@zondax/solidity-bignumber/src/BigNumbers.sol';
-import { BigInts } from '@zondax/filecoin-solidity/contracts/v0.8/utils/BigInts.sol';
+import { MarketAPI } from 'filecoin-solidity/contracts/v0.8/MarketAPI.sol';
+import { CommonTypes } from 'filecoin-solidity/contracts/v0.8/types/CommonTypes.sol';
+import { MarketTypes } from 'filecoin-solidity/contracts/v0.8/types/MarketTypes.sol';
+import { AccountTypes } from 'filecoin-solidity/contracts/v0.8/types/AccountTypes.sol';
+import { CommonTypes } from 'filecoin-solidity/contracts/v0.8/types/CommonTypes.sol';
+import { AccountCBOR } from 'filecoin-solidity/contracts/v0.8/cbor/AccountCbor.sol';
+import { MarketCBOR } from 'filecoin-solidity/contracts/v0.8/cbor/MarketCbor.sol';
+import { BytesCBOR } from 'filecoin-solidity/contracts/v0.8/cbor/BytesCbor.sol';
+import { BigNumbers, BigNumber } from 'solidity-bignumber/src/BigNumbers.sol';
+import { BigInts } from 'filecoin-solidity/contracts/v0.8/utils/BigInts.sol';
 import { CBOR } from 'solidity-cborutils/contracts/CBOR.sol';
-import { Misc } from '@zondax/filecoin-solidity/contracts/v0.8/utils/Misc.sol';
-import { FilAddresses } from '@zondax/filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol';
+import { Misc } from 'filecoin-solidity/contracts/v0.8/utils/Misc.sol';
+import { FilAddresses } from 'filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol';
 import { IAxelarGateway } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
 import { IAxelarGasService } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol';
 import { AxelarExecutable } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol';
