@@ -7,3 +7,6 @@
 [submodule "lib/filecoin-solidity"]
 	path = lib/filecoin-solidity
 	url = https://github.com/filecoin-project/filecoin-solidity
+[submodule "lib/solidity-BigNumber"]
+	path = lib/solidity-BigNumber
+	url = https://github.com/Zondax/solidity-BigNumber
