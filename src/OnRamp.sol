@@ -71,6 +71,7 @@ contract OnRampContract is PODSIVerifier {
         uint256 amount;
         IERC20 token;
     }
+    // Possible rearrangement:
     // struct Hint {string location, uint64 size} ? 
     // struct Payment {uint256 amount, IERC20 token}?
 
@@ -81,9 +82,10 @@ contract OnRampContract is PODSIVerifier {
     mapping(uint64 => uint64[]) public aggregations;
     mapping(uint64 => address) public aggregationPayout;
     mapping(uint64 => bool) public provenAggregations;
+    mapping(bytes => uint64) public commPToAggregateID;
 
     function offer_data(Deal calldata deal) external payable returns (uint64) {
-        require(deal.token.transferFrom(msg.sender, address(this), deal.amount), 'Payment transfer failed');
+        require(deal.token.transferFrom(msg.sender, address(this), deal.amount), "Payment transfer failed");
 
         uint64 id = nextDealId++;
         deals[id] = deal;
@@ -92,7 +94,6 @@ contract OnRampContract is PODSIVerifier {
         return id;
     }
 
-    // TODO: duration bounds checking 
     function commitAggregate(bytes calldata aggregate, uint64[] calldata claimedIDs, ProofData[] calldata inclusionProofs, address payoutAddr) external {
         uint64[] memory dealIDs = new uint64[](claimedIDs.length);
         // Prove all deals are committed by aggregate commP 
@@ -103,10 +104,7 @@ contract OnRampContract is PODSIVerifier {
         }
         aggregations[nextAggregateID] = dealIDs;
         aggregationPayout[nextAggregateID] = payoutAddr;
-
-        // call into axelar bridge targeting our filecoin prover contracts
-        // passing in aggregateID and commP 
-        // For tomorrow just call to the proving contract
+        commPToAggregateID[aggregate] = nextAggregateID;
     }
 
     function verifyDataStored(uint64 aggID, uint idx, uint64 dealID) external view returns (bool) {
@@ -118,8 +116,8 @@ contract OnRampContract is PODSIVerifier {
 
     // probably needs to be wrapped in an axelar _execute function
     function proveDataStored(uint64 aggID) external {
-        // check that the caller is one of our trusted filecoin data prover contracts 
-        // TODO methods to add trusted callers 
+        // check that the caller is a trusted oracle
+        // TODO methods to add trusted oracles 
 
         // transfer payment to the receiver
         for (uint i = 0; i < aggregations[aggID].length; i++) {
