@@ -14,6 +14,7 @@ import { CBOR } from "solidity-cborutils/contracts/CBOR.sol";
 import { Misc } from "lib/filecoin-solidity/contracts/v0.8/utils/Misc.sol";
 import { FilAddresses } from "lib/filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol";
 import { DataAttestation, IBridgeContract } from "./Oracles.sol";
+import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
 
 using CBOR for CBOR.CBORBuffer;
 
@@ -56,8 +57,10 @@ contract DealClient {
 
         pieceDeals[proposal.piece_cid.data] = mdnp.dealId;
         pieceStatus[proposal.piece_cid.data] = Status.DealPublished;
-        DataAttestation memory attest = DataAttestation(proposal.commP, proposal.duration, mdnp.dealId, DealPublished);
-        bridgeContract._execute('FIL', this.address.toHexString(), abi.encode(attest));
+
+        int64 duration = CommonTypes.ChainEpoch.unwrap(proposal.end_epoch) - CommonTypes.ChainEpoch.unwrap(proposal.start_epoch);
+        DataAttestation memory attest = DataAttestation(proposal.piece_cid.data, duration, mdnp.dealId, uint256(Status.DealPublished));
+        bridgeContract._execute('FIL', addressToHexString(address(this)), abi.encode(attest));
     }
 
     // handle_filecoin_method is the universal entry point for any evm based
@@ -82,4 +85,8 @@ contract DealClient {
         }
         return (0, codec, ret);
     }
+    function addressToHexString(address _addr) internal pure returns (string memory) {
+        return Strings.toHexString(uint256(uint160(_addr)), 20);
+    }
 }
+

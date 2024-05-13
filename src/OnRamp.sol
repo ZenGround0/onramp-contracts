@@ -4,6 +4,7 @@ pragma solidity ^0.8.17;
 import {IERC20} from "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {Cid} from "./Cid.sol";
 import {TRUNCATOR} from "./Const.sol";
+import {DataAttestation} from "./Oracles.sol";
 
 
 // Adapted from https://github.com/lighthouse-web3/raas-starter-kit/blob/main/contracts/data-segment/Proof.sol
@@ -78,6 +79,7 @@ contract OnRampContract is PODSIVerifier {
     event DataReady(Deal deal, uint64 id);
     uint64 private nextDealId = 1;
     uint64 private nextAggregateID = 1;
+    address public dataProofOracle;
     mapping(uint64 => Deal) public deals;
     mapping(uint64 => uint64[]) public aggregations;
     mapping(uint64 => address) public aggregationPayout;
@@ -114,10 +116,9 @@ contract OnRampContract is PODSIVerifier {
         return true;
     }
 
-    // probably needs to be wrapped in an axelar _execute function
+    // Called by oracle to prove the data is stored
     function proveDataStored(uint64 aggID) external {
-        // check that the caller is a trusted oracle
-        // TODO methods to add trusted oracles 
+        require(msg.sender == dataProofOracle, "Only oracle can prove data stored");
 
         // transfer payment to the receiver
         for (uint i = 0; i < aggregations[aggID].length; i++) {
