@@ -40,10 +40,6 @@ contract DealClient {
 
     IBridgeContract public bridgeContract;
 
-    constructor(address _bridgeContract) {
-        bridgeContract = IBridgeContract(_bridgeContract);
-    }
-
     function setBridgeContract(address _bridgeContract) external {
         if (address(bridgeContract) == address(0)) {
             bridgeContract = IBridgeContract(_bridgeContract);
