@@ -18,22 +18,16 @@ interface IReceiveAttestation {
 
 // This contract forwards between contracts on the same chain
 // Useful for integration tests of flows involving bridges 
-// It expects a DealAttestation struct as payload and forwards to
-// and L2 on ramp contract at 
+// It expects a DealAttestation struct as payload from 
+// an address with string encoding == senderHex and forwards to
+// an L2 on ramp contract at receiver address
 contract ForwardingProofMockBridge is IBridgeContract {
-    address public owner;
     address public receiver;
     string public senderHex;
 
-    constructor() {
-        owner = msg.sender;
-    }
-
     function setSenderReceiver(string calldata senderHex_, address receiver_) external {
-        require(msg.sender == owner, 'Only owner can set receiver');
         receiver = receiver_;
         senderHex = senderHex_;
-
     }
 
     function _execute(string calldata _sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external override {

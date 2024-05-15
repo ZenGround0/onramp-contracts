@@ -86,6 +86,15 @@ contract OnRampContract is PODSIVerifier {
     mapping(uint64 => bool) public provenAggregations;
     mapping(bytes => uint64) public commPToAggregateID;
 
+
+    function setOracle(address oracle_) external {
+        if (dataProofOracle == address(0)) {
+            dataProofOracle = oracle_;
+        } else {
+            revert("Oracle already set");
+        }
+    }
+
     function offer_data(Deal calldata deal) external payable returns (uint64) {
         require(deal.token.transferFrom(msg.sender, address(this), deal.amount), "Payment transfer failed");
 

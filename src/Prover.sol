@@ -44,6 +44,14 @@ contract DealClient {
         bridgeContract = IBridgeContract(_bridgeContract);
     }
 
+    function setBridgeContract(address _bridgeContract) external {
+        if (address(bridgeContract) == address(0)) {
+            bridgeContract = IBridgeContract(_bridgeContract);
+        } else {
+            revert("Bridge contract already set");
+        }
+    }
+
     // dealNotify is the callback from the market actor into the contract at the end
     // of PublishStorageDeals. This message holds the previously approved deal proposal
     // and the associated dealID. The dealID is stored as part of the contract state
