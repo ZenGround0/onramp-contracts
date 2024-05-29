@@ -2,68 +2,68 @@
 # Deploys contracts needed for onramp demo
 # Sets up config for data-client and xchain-connector
 function deploy-onramp
-	 # Build bytecode from source
-	 cd $ONRAMP_CODE_PATH
-	 cd ~/code/onramp-contracts
-	 forge build
-	 set bcProver (get-bytecode out/Prover.sol/DealClient.json)
-	 set bcOracle (get-bytecode out/Oracles.sol/ForwardingProofMockBridge.json)
-	 set bcOnRamp (get-bytecode out/OnRamp.sol/OnRampContract.json)
+	# Build bytecode from source
+	cd $ONRAMP_CODE_PATH
+	cd ~/code/onramp-contracts
+	forge build
+	set bcProver (get-bytecode out/Prover.sol/DealClient.json)
+	set bcOracle (get-bytecode out/Oracles.sol/ForwardingProofMockBridge.json)
+	set bcOnRamp (get-bytecode out/OnRamp.sol/OnRampContract.json)
 
-	 # Deploy contracts to local network
-	 cd $LOTUS_EXEC_PATH
-	 echo $bcProver > prover.bytecode
-	 echo $bcOracle > oracle.bytecode
-	 echo $bcOnRamp > onramp.bytecode
-	 set proverOut (./lotus evm deploy --hex prover.bytecode)
-	 set oracleOut (./lotus evm deploy --hex oracle.bytecode)
-	 set onrampOut (./lotus evm deploy --hex onramp.bytecode)
+	# Deploy contracts to local network
+	cd $LOTUS_EXEC_PATH
+	echo $bcProver > prover.bytecode
+	echo $bcOracle > oracle.bytecode
+	echo $bcOnRamp > onramp.bytecode
+	set proverOut (./lotus evm deploy --hex prover.bytecode)
+	set oracleOut (./lotus evm deploy --hex oracle.bytecode)
+	set onrampOut (./lotus evm deploy --hex onramp.bytecode)
 
-	 set -x proverAddr (parse-address $proverOut)
-	 set -x oracleAddr (parse-address $oracleOut)
-	 set -x onrampAddr (parse-address $onrampOut)
-	 set proverIDAddr (parse-id-address $proverOut)
-	 set oracleIDAddr (parse-id-address $oracleOut)
-	 set onrampIDAddr (parse-id-address $onrampOut)
-	 
+	set -x proverAddr (parse-address $proverOut)
+	set -x oracleAddr (parse-address $oracleOut)
+	set -x onrampAddr (parse-address $onrampOut)
+	set proverIDAddr (parse-id-address $proverOut)
+	set oracleIDAddr (parse-id-address $oracleOut)
+	set onrampIDAddr (parse-id-address $onrampOut)
 
-	 # Print out Info
-	 echo -e "~*~*~Oracle~*~*~\n"
-	 string join \n $oracleOut[3..]
-	 echo -e "\n"
-	 echo -e "~*~*~Prover~*~*~\n"
-	 string join \n $proverOut[3..]
-	 echo -e "\n"	 
-	 echo -e "~*~*~OnRamp~*~*~\n"
-	 string join \n $onrampOut[3..]
-	 echo -e "\n"
 
-	 # Wire contracts up together
-	 echo -e "~*~*~Connect Oracle to Prover\n"
-	 set calldataProver (cast calldata "setBridgeContract(address)" $oracleAddr)
-	 ./lotus evm invoke $proverIDAddr $calldataProver
+	# Print out Info
+	echo -e "~*~*~Oracle~*~*~\n"
+	string join \n $oracleOut[3..]
+	echo -e "\n"
+	echo -e "~*~*~Prover~*~*~\n"
+	string join \n $proverOut[3..]
+	echo -e "\n"	 
+	echo -e "~*~*~OnRamp~*~*~\n"
+	string join \n $onrampOut[3..]
+	echo -e "\n"
 
-	 echo -e "\n~*~*~Connect Oracle to OnRamp\n"
-	 set calldataOnRamp (cast calldata "setOracle(address)" $oracleAddr)
-	 ./lotus evm invoke $onrampIDAddr $calldataOnRamp
+	# Wire contracts up together
+	echo -e "~*~*~Connect Oracle to Prover\n"
+	set calldataProver (cast calldata "setBridgeContract(address)" $oracleAddr)
+	./lotus evm invoke $proverIDAddr $calldataProver
 
-	 echo -e "\n~*~*~Connect Prover and OnRamp to Oracle\n"
-	 set callDataOracle (cast calldata "setSenderReceiver(string,address)" $proverAddr $onrampAddr)
-	 ./lotus evm invoke $oracleIDAddr $callDataOracle
+	echo -e "\n~*~*~Connect Oracle to OnRamp\n"
+	set calldataOnRamp (cast calldata "setOracle(address)" $oracleAddr)
+	./lotus evm invoke $onrampIDAddr $calldataOnRamp
+
+	echo -e "\n~*~*~Connect Prover and OnRamp to Oracle\n"
+	set callDataOracle (cast calldata "setSenderReceiver(string,address)" $proverAddr $onrampAddr)
+	./lotus evm invoke $oracleIDAddr $callDataOracle
 
 	# Setup config
 	mkdir -p ~/.onramp
-    mkdir -p ~/.onramp/keystore
+	mkdir -p ~/.onramp/keystore
 
-    cd $LOTUS_EXEC_PATH
-    set -x filClientAddr (./lotus wallet new)
-    ./lotus wallet send $filClientAddr 10000 
-    set keyJson (./lotus wallet export $filAddr |  xxd -r -p | jq .)
-    cd $ONRAMP_CODE_PATH
-    set abiJson (jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . )
-    echo $keyJson > ~/.onramp/keystore/demo
+	cd $LOTUS_EXEC_PATH
+	set -x filClientAddr (./lotus wallet new)
+	./lotus wallet send $filClientAddr 10000 
+	set keyJson (./lotus wallet export $filAddr |  xxd -r -p | jq .)
+	cd $ONRAMP_CODE_PATH
+	set abiJson (jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . )
+	echo $keyJson > ~/.onramp/keystore/demo
 
-    jo -a (jo -- ChainID=314 Api="localhost:1234" -s OnRampAddress="$onrampAddr" KeyPath=~/.onramp/keystore/demo ClientAddr="$filClientAddr" OnRampABI="$abiJson") > ~/.onramp/config.json
+	jo -a (jo -- ChainID=314 Api="localhost:1234" -s OnRampAddress="$onrampAddr" KeyPath=~/.onramp/keystore/demo ClientAddr="$filClientAddr" OnRampABI="$abiJson") > ~/.onramp/config.json
 	deploy-tokens $filClientAddr
 end
 
