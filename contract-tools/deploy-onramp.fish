@@ -57,13 +57,14 @@ function deploy-onramp
 
 	cd $LOTUS_EXEC_PATH
 	set -x filClientAddr (./lotus wallet new)
-	./lotus wallet send $filClientAddr 10000 
+	./lotus send $filClientAddr 10000 
 	set keyJson (./lotus wallet export $filAddr |  xxd -r -p | jq .)
 	cd $ONRAMP_CODE_PATH
 	set abiJson (jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . )
 	echo $keyJson > ~/.onramp/keystore/demo
 
 	jo -a (jo -- ChainID=314 Api="localhost:1234" -s OnRampAddress="$onrampAddr" KeyPath=~/.onramp/keystore/demo ClientAddr="$filClientAddr" OnRampABI="$abiJson") > ~/.onramp/config.json
+	echo "config written to ~/.onramp/config.json" 
 	deploy-tokens $filClientAddr
 end
 
@@ -98,15 +99,15 @@ function deploy-tokens
 
 	 ascii-five
 	 echo -e "~$0.05~$0.05~ 'NICKLE' ~$0.05~$0.05~\n"
-	 ./lotus evm deploy --from $clientAddr --hex nickle.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex nickle.bytecode
 
 	 ascii-shell
 	 echo -e "~#!~#!~ 'SHELL' ~#!~#!~\n"	 
-	 ./lotus evm deploy --from $clientAddr --hex cowry.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex cowry.bytecode
 
 	 ascii-union-jack	 
 	 echo -e "~#L~#L~ 'NEWTON' ~#L~#L~\n"
-	 ./lotus evm deploy --from $clientAddr --hex pound.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex pound.bytecode
 end
 
 # Some ASCII logos to give our erc20s character
