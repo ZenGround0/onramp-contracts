@@ -65,7 +65,7 @@ contract PODSIVerifier {
 
 
 contract OnRampContract is PODSIVerifier {
-     struct Deal {
+     struct Offer {
         bytes commP;
         int64 duration;
         string location;
@@ -76,11 +76,11 @@ contract OnRampContract is PODSIVerifier {
     // struct Hint {string location, uint64 size} ? 
     // struct Payment {uint256 amount, IERC20 token}?
 
-    event DataReady(Deal deal, uint64 id);
-    uint64 private nextDealId = 1;
+    event DataReady(Offer offer, uint64 id);
+    uint64 private nextOfferId = 1;
     uint64 private nextAggregateID = 1;
     address public dataProofOracle;
-    mapping(uint64 => Deal) public deals;
+    mapping(uint64 => Offer) public offers;
     mapping(uint64 => uint64[]) public aggregations;
     mapping(uint64 => address) public aggregationPayout;
     mapping(uint64 => bool) public provenAggregations;
@@ -95,32 +95,32 @@ contract OnRampContract is PODSIVerifier {
         }
     }
 
-    function offer_data(Deal calldata deal) external payable returns (uint64) {
-        require(deal.token.transferFrom(msg.sender, address(this), deal.amount), "Payment transfer failed");
+    function offerData(Offer calldata offer) external payable returns (uint64) {
+        require(offer.token.transferFrom(msg.sender, address(this), offer.amount), "Payment transfer failed");
 
-        uint64 id = nextDealId++;
-        deals[id] = deal;
+        uint64 id = nextOfferId++;
+        offers[id] = offer;
 
-        emit DataReady(deal, id);
+        emit DataReady(offer, id);
         return id;
     }
 
     function commitAggregate(bytes calldata aggregate, uint64[] calldata claimedIDs, ProofData[] calldata inclusionProofs, address payoutAddr) external {
-        uint64[] memory dealIDs = new uint64[](claimedIDs.length);
-        // Prove all deals are committed by aggregate commP 
+        uint64[] memory offerIDs = new uint64[](claimedIDs.length);
+        // Prove all offers are committed by aggregate commP 
         for (uint64 i = 0; i < claimedIDs.length; i++) {
-            uint64 dealID = claimedIDs[i];
-            dealIDs[i] = dealID;
-            require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(deals[dealID].commP), Cid.cidToPieceCommitment(aggregate)), "Proof verification failed");
+            uint64 offerID = claimedIDs[i];
+            offerIDs[i] = offerID;
+            require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(offers[offerID].commP), Cid.cidToPieceCommitment(aggregate)), "Proof verification failed");
         }
-        aggregations[nextAggregateID] = dealIDs;
+        aggregations[nextAggregateID] = offerIDs;
         aggregationPayout[nextAggregateID] = payoutAddr;
         commPToAggregateID[aggregate] = nextAggregateID;
     }
 
-    function verifyDataStored(uint64 aggID, uint idx, uint64 dealID) external view returns (bool) {
+    function verifyDataStored(uint64 aggID, uint idx, uint64 offerID) external view returns (bool) {
         require(provenAggregations[aggID], "Provided aggregation not proven");
-        require(aggregations[aggID][idx] == dealID, "Aggregation does not include deal");
+        require(aggregations[aggID][idx] == offerID, "Aggregation does not include offer");
 
         return true;
     }
@@ -131,8 +131,8 @@ contract OnRampContract is PODSIVerifier {
 
         // transfer payment to the receiver
         for (uint i = 0; i < aggregations[aggID].length; i++) {
-            uint64 dealID = aggregations[aggID][i];
-            require(deals[dealID].token.transfer(aggregationPayout[aggID], deals[dealID].amount), "Payment transfer failed");
+            uint64 offerID = aggregations[aggID][i];
+            require(offers[offerID].token.transfer(aggregationPayout[aggID], offers[offerID].amount), "Payment transfer failed");
         }   
         provenAggregations[aggID] = true;
     }

@@ -1,5 +1,7 @@
 # Set ONRAMP_CODE_PATH and LOTUS_EXEC_PATH before calling
-function deploy-contracts
+# Deploys contracts needed for onramp demo
+# Sets up config for data-client and xchain-connector
+function deploy-onramp
 	 # Build bytecode from source
 	 cd $ONRAMP_CODE_PATH
 	 cd ~/code/onramp-contracts
@@ -48,6 +50,21 @@ function deploy-contracts
 	 echo -e "\n~*~*~Connect Prover and OnRamp to Oracle\n"
 	 set callDataOracle (cast calldata "setSenderReceiver(string,address)" $proverAddr $onrampAddr)
 	 ./lotus evm invoke $oracleIDAddr $callDataOracle
+
+	# Setup config
+	mkdir -p ~/.onramp
+    mkdir -p ~/.onramp/keystore
+
+    cd $LOTUS_EXEC_PATH
+    set -x filClientAddr (./lotus wallet new)
+    ./lotus wallet send $filClientAddr 10000 
+    set keyJson (./lotus wallet export $filAddr |  xxd -r -p | jq .)
+    cd $ONRAMP_CODE_PATH
+    set abiJson (jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . )
+    echo $keyJson > ~/.onramp/keystore/demo
+
+    jo -a (jo -- ChainID=314 Api="localhost:1234" -s OnRampAddress="$onrampAddr" KeyPath=~/.onramp/keystore/demo ClientAddr="$filClientAddr" OnRampABI="$abiJson") > ~/.onramp/config.json
+	deploy-tokens $filClientAddr
 end
 
 #  $argv[1] path to compiled file
@@ -65,7 +82,6 @@ function parse-id-address
 	 echo $argv | grep -oP "ID Address: \K(t|f)[0-9]+"
 end
 
-# argv[1] is the address of the client
 function deploy-tokens
 	 cd $ONRAMP_CODE_PATH
 	 forge build
@@ -78,17 +94,19 @@ function deploy-tokens
 	 echo $bcCowry > cowry.bytecode
 	 echo $bcPound > pound.bytecode
 
+	set clientAddr (cat ~/.onramp/config.json | jq '.ClientAddr')
+
 	 ascii-five
 	 echo -e "~$0.05~$0.05~ 'NICKLE' ~$0.05~$0.05~\n"
-	 ./lotus evm deploy --from $argv[1] --hex nickle.bytecode
+	 ./lotus evm deploy --from $clientAddr --hex nickle.bytecode
 
 	 ascii-shell
 	 echo -e "~#!~#!~ 'SHELL' ~#!~#!~\n"	 
-	 ./lotus evm deploy --from $argv[1] --hex cowry.bytecode
+	 ./lotus evm deploy --from $clientAddr --hex cowry.bytecode
 
 	 ascii-union-jack	 
 	 echo -e "~#L~#L~ 'NEWTON' ~#L~#L~\n"
-	 ./lotus evm deploy --from $argv[1] --hex pound.bytecode
+	 ./lotus evm deploy --from $clientAddr --hex pound.bytecode
 end
 
 # Some ASCII logos to give our erc20s character

@@ -109,6 +109,7 @@ type Config struct {
 	OnRampAddress string
 	KeyPath       string
 	OnRampABI     string
+	ClientAddr    string
 }
 
 // Mirror OnRamp.sol's `Offer` struct
