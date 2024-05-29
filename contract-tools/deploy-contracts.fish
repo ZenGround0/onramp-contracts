@@ -1,5 +1,7 @@
+# Set ONRAMP_CODE_PATH and LOTUS_EXEC_PATH before calling
 function deploy-contracts
 	 # Build bytecode from source
+	 cd $ONRAMP_CODE_PATH
 	 cd ~/code/onramp-contracts
 	 forge build
 	 set bcProver (get-bytecode out/Prover.sol/DealClient.json)
@@ -7,7 +9,7 @@ function deploy-contracts
 	 set bcOnRamp (get-bytecode out/OnRamp.sol/OnRampContract.json)
 
 	 # Deploy contracts to local network
-	 cd ~/code/lotus
+	 cd $LOTUS_EXEC_PATH
 	 echo $bcProver > prover.bytecode
 	 echo $bcOracle > oracle.bytecode
 	 echo $bcOnRamp > onramp.bytecode
@@ -15,9 +17,9 @@ function deploy-contracts
 	 set oracleOut (./lotus evm deploy --hex oracle.bytecode)
 	 set onrampOut (./lotus evm deploy --hex onramp.bytecode)
 
-	 set proverAddr (parse-address $proverOut)
-	 set oracleAddr (parse-address $oracleOut)
-	 set onrampAddr (parse-address $onrampOut)
+	 set -x proverAddr (parse-address $proverOut)
+	 set -x oracleAddr (parse-address $oracleOut)
+	 set -x onrampAddr (parse-address $onrampOut)
 	 set proverIDAddr (parse-id-address $proverOut)
 	 set oracleIDAddr (parse-id-address $oracleOut)
 	 set onrampIDAddr (parse-id-address $onrampOut)
@@ -63,29 +65,30 @@ function parse-id-address
 	 echo $argv | grep -oP "ID Address: \K(t|f)[0-9]+"
 end
 
+# argv[1] is the address of the client
 function deploy-tokens
-	 cd ~/code/onramp-contracts
+	 cd $ONRAMP_CODE_PATH
 	 forge build
 	 set bcNickle (get-bytecode out/Token.sol/Nickle.json)
 	 set bcCowry (get-bytecode out/Token.sol/BronzeCowry.json)
 	 set bcPound (get-bytecode out/Token.sol/DebasedTowerPoundSterling.json)
 
-	 cd ~/code/lotus
+	 cd $LOTUS_EXEC_PATH
 	 echo $bcNickle > nickle.bytecode
 	 echo $bcCowry > cowry.bytecode
 	 echo $bcPound > pound.bytecode
 
 	 ascii-five
 	 echo -e "~$0.05~$0.05~ 'NICKLE' ~$0.05~$0.05~\n"
-	 ./lotus evm deploy --hex nickle.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex nickle.bytecode
 
 	 ascii-shell
 	 echo -e "~#!~#!~ 'SHELL' ~#!~#!~\n"	 
-	 ./lotus evm deploy --hex cowry.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex cowry.bytecode
 
 	 ascii-union-jack	 
 	 echo -e "~#L~#L~ 'NEWTON' ~#L~#L~\n"
-	 ./lotus evm deploy --hex pound.bytecode
+	 ./lotus evm deploy --from $argv[1] --hex pound.bytecode
 end
 
 # Some ASCII logos to give our erc20s character
