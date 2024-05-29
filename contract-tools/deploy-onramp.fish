@@ -57,8 +57,9 @@ function deploy-onramp
 
 	cd $LOTUS_EXEC_PATH
 	set -x filClientAddr (./lotus wallet new)
-	./lotus send $filClientAddr 10000 
-	set keyJson (./lotus wallet export $filAddr |  xxd -r -p | jq .)
+
+	./lotus state wait-msg --timeout "2m" (./lotus send $filClientAddr 10000)
+	set keyJson (./lotus wallet export $filClientAddr |  xxd -r -p | jq .)
 	cd $ONRAMP_CODE_PATH
 	set abiJson (jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . )
 	echo $keyJson > ~/.onramp/keystore/demo
