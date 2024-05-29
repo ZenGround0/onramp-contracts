@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ethereum/go-ethereum"
@@ -130,6 +131,10 @@ func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
 
 // Read JSON config file given path and return Config object
 func readConfig(path string) (*Config, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %w", err)
