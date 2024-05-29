@@ -154,12 +154,15 @@ func readConfig(path string) (*Config, error) {
 	defer file.Close()
 
 	decoder := json.NewDecoder(file)
-	var cfg Config
+	var cfg []Config
 	err = decoder.Decode(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode config file: %v", err)
 	}
-	return &cfg, nil
+	if len(cfg) != 1 {
+		return nil, fmt.Errorf("expected 1 config, got %d", len(cfg))
+	}
+	return &cfg[0], nil
 }
 
 // Read private key from file and return as an ECDSA private key
