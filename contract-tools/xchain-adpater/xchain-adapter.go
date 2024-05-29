@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -144,9 +145,13 @@ func readConfig(path string) (*Config, error) {
 	}
 	defer file.Close()
 
-	decoder := json.NewDecoder(file)
+	bs, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config bytes from file: %w", err)
+	}
 	var cfg []Config
-	err = decoder.Decode(&cfg)
+
+	err = json.Unmarshal(bs, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode config file: %v", err)
 	}
