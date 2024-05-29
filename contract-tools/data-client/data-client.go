@@ -9,7 +9,6 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -17,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ipfs/go-cid"
+	"github.com/mitchellh/go-homedir"
 	"github.com/urfave/cli/v2"
 )
 
@@ -141,10 +141,12 @@ func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
 
 // Read JSON config file given path and return Config object
 func readConfig(path string) (*Config, error) {
-	path, err := filepath.Abs(path)
+	fmt.Printf("path str %s\n", path)
+	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
+	fmt.Printf("path str after filepath.Abs%s\n", path)
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %w", err)
@@ -162,10 +164,12 @@ func readConfig(path string) (*Config, error) {
 
 // Read private key from file and return as an ECDSA private key
 func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	path, err := filepath.Abs(path)
+	fmt.Printf("path str %s\n", path)
+	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
+	fmt.Printf("path str after filepath.Abs%s\n", path)
 	b64KeyBs, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
