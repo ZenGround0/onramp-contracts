@@ -34,9 +34,9 @@ func main() {
 		Usage: "Offers data to the Filecoin network via Ethereum smart contracts",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:        "config",
-				Usage:       "Path to the configuration file",
-				DefaultText: "~/.onramp/config.json",
+				Name:  "config",
+				Usage: "Path to the configuration file",
+				Value: "~/.onramp/config.json",
 			},
 		},
 		Commands: []*cli.Command{

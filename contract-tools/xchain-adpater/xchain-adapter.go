@@ -27,9 +27,9 @@ func main() {
 		Usage: "Pick up data offers from other chains and turn them into filecoin deals",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:        "config",
-				Usage:       "Path to the configuration file",
-				DefaultText: "~/.onramp/config.json",
+				Name:  "config",
+				Usage: "Path to the configuration file",
+				Value: "~/.onramp/config.json",
 			},
 		},
 		Commands: []*cli.Command{
