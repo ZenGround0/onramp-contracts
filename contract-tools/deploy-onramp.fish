@@ -61,7 +61,7 @@ function deploy-onramp
 	./lotus state wait-msg --timeout "2m" (./lotus send $filClientAddr 10000)
 	set keyJson (./lotus wallet export $filClientAddr |  xxd -r -p | jq .)
 	cd $ONRAMP_CODE_PATH
-	jq -c '.abi' out/OnRamp.sol/OnRampContract.json | jq -sR . > ~/.xchain/onramp-abi.json
+	jq -c '.abi' out/OnRamp.sol/OnRampContract.json > ~/.xchain/onramp-abi.json
 	echo $keyJson > ~/.xchain/keystore/demo-FIL
 
 	jo -a (jo -- ChainID=314 Api="localhost:1234" -s OnRampAddress="$onrampAddr" KeyPath=~/.xchain/keystore/demo ClientAddr="$filClientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
