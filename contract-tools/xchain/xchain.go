@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"os"
-	"strings"
+	"strconv"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -24,8 +26,9 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:  "Filecoin Xchain Adapter",
-		Usage: "Pick up data offers from other chains and turn them into filecoin deals",
+		Name:        "xchain",
+		Description: "Filecoin Xchain Data Services",
+		Usage:       "Export filecoin data storage to any blockchain",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "config",
@@ -38,7 +41,7 @@ func main() {
 				Name:  "daemon",
 				Usage: "Start the xchain adapter daemon",
 				Action: func(cctx *cli.Context) error {
-					cfg, err := readConfig(cctx.String("config"))
+					cfg, err := loadConfig(cctx.String("config"))
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -50,7 +53,7 @@ func main() {
 					}
 
 					contractAddress := common.HexToAddress(cfg.OnRampAddress)
-					parsedABI, err := abi.JSON(strings.NewReader(cfg.OnRampABI))
+					parsedABI, err := loadAbi(cfg.OnRampABIPath)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -86,6 +89,110 @@ func main() {
 					return nil
 				},
 			},
+			{
+				Name:  "client",
+				Usage: "Send data from cross chain to filecoin",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "offer",
+						Usage:     "Offer data by providing file and payment parameters",
+						ArgsUsage: "<commP> <bufferLocation> <token-hex> <token-amount>",
+						Action: func(cctx *cli.Context) error {
+							cfg, err := loadConfig(cctx.String("config"))
+							if err != nil {
+								log.Fatal(err)
+							}
+
+							// Dial network
+							client, err := ethclient.Dial(cfg.Api)
+							if err != nil {
+								log.Fatal(err)
+							}
+
+							// Load onramp contract handle
+							contractAddress := common.HexToAddress(cfg.OnRampAddress)
+							parsedABI, err := loadAbi(cfg.OnRampABIPath)
+							if err != nil {
+								log.Fatal(err)
+							}
+							onramp := bind.NewBoundContract(contractAddress, *parsedABI, client, client, client)
+							if err != nil {
+								log.Fatal(err)
+							}
+
+							// Get auth
+							privateKey, err := loadPrivateKey(cfg.KeyPath)
+							if err != nil {
+								log.Fatal(err)
+							}
+							auth, err := bind.NewKeyedTransactorWithChainID(privateKey, big.NewInt(int64(cfg.ChainID)))
+							if err != nil {
+								log.Fatal(err)
+							}
+
+							// Send Tx
+							params, err := packOfferDataParams(cctx, *parsedABI)
+							if err != nil {
+								log.Fatal(err)
+							}
+							tx, err := onramp.Transact(auth, "offerData", params)
+							if err != nil {
+								log.Fatal(err)
+							}
+							receipt, err := bind.WaitMined(cctx.Context, client, tx)
+							if err != nil {
+								log.Fatal(err)
+							}
+							log.Printf("Tx %s mined: %d", tx.Hash().Hex(), receipt.Status)
+
+							return nil
+						},
+					},
+				},
+			},
+			{
+				Name:  "buffer",
+				Usage: "Store data between offer and commit",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "put",
+						Usage: "Put content into the buffer from stdin",
+						Action: func(c *cli.Context) error {
+							bfs := NewBufferFS()
+							// Directly pass os.Stdin to the Put method
+							id, err := bfs.Put(os.Stdin)
+							if err != nil {
+								return err
+							}
+							fmt.Printf("Content stored with ID: %d\n", id)
+							return nil
+						},
+					},
+					{
+						Name:  "get",
+						Usage: "Get a file from the buffer by ID",
+						Action: func(c *cli.Context) error {
+							if c.Args().Len() < 1 {
+								return fmt.Errorf("please specify the file ID")
+							}
+							id, err := strconv.Atoi(c.Args().Get(0))
+							if err != nil {
+								return fmt.Errorf("invalid ID format")
+							}
+							bfs := NewBufferFS()
+							reader, err := bfs.Get(id)
+							if err != nil {
+								return err
+							}
+							_, err = io.Copy(os.Stdout, reader)
+							if err != nil {
+								return err
+							}
+							return nil
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -100,7 +207,7 @@ type Config struct {
 	Api           string
 	OnRampAddress string
 	KeyPath       string
-	OnRampABI     string
+	OnRampABIPath string
 	ClientAddr    string
 }
 
@@ -131,13 +238,11 @@ func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
 }
 
 // Read JSON config file given path and return Config object
-func readConfig(path string) (*Config, error) {
-	fmt.Printf("path str %s\n", path)
+func loadConfig(path string) (*Config, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	fmt.Printf("path str after filepath.Abs%s\n", path)
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -162,13 +267,11 @@ func readConfig(path string) (*Config, error) {
 }
 
 // Read private key from file and return as an ECDSA private key
-func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	fmt.Printf("path str %s\n", path)
+func loadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	fmt.Printf("path str after filepath.Abs%s\n", path)
 	b64KeyBs, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -188,4 +291,20 @@ func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	}
 
 	return privateKey, nil
+}
+
+func loadAbi(path string) (*abi.ABI, error) {
+	path, err := homedir.Expand(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open abi file: %w", err)
+	}
+	parsedABI, err := abi.JSON(f)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse abi: %w", err)
+	}
+	return &parsedABI, nil
 }
