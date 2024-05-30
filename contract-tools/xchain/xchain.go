@@ -272,11 +272,19 @@ func loadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	b64KeyBs, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	b64Key := string(b64KeyBs)
+	var keyJson struct {
+		Type       string
+		PrivateKey string
+	}
+	err = json.Unmarshal(raw, &keyJson)
+	if err != nil {
+		return nil, err
+	}
+	b64Key := keyJson.PrivateKey
 
 	// Decode the base64 string to bytes
 	keyBytes, err := base64.StdEncoding.DecodeString(b64Key)
