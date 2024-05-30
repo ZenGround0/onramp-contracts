@@ -33,7 +33,7 @@ func main() {
 			&cli.StringFlag{
 				Name:  "config",
 				Usage: "Path to the configuration file",
-				Value: "~/.onramp/config.json",
+				Value: "~/.xchain/config.json",
 			},
 		},
 		Commands: []*cli.Command{
