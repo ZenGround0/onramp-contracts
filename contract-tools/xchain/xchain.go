@@ -2,20 +2,20 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -121,11 +121,7 @@ func main() {
 							}
 
 							// Get auth
-							privateKey, err := loadPrivateKey(cfg.KeyPath)
-							if err != nil {
-								log.Fatal(err)
-							}
-							auth, err := bind.NewKeyedTransactorWithChainID(privateKey, big.NewInt(int64(cfg.ChainID)))
+							auth, err := loadPrivateKey(cfg)
 							if err != nil {
 								log.Fatal(err)
 							}
@@ -207,8 +203,8 @@ type Config struct {
 	Api           string
 	OnRampAddress string
 	KeyPath       string
-	OnRampABIPath string
 	ClientAddr    string
+	OnRampABIPath string
 }
 
 // Mirror OnRamp.sol's `Offer` struct
@@ -237,7 +233,7 @@ func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
 	return abi.Pack("offerData", offer)
 }
 
-// Read JSON config file given path and return Config object
+// Load Config given path to JSON config file
 func loadConfig(path string) (*Config, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
@@ -266,41 +262,28 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg[0], nil
 }
 
-// Read private key from file and return as an ECDSA private key
-func loadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	path, err := homedir.Expand(path)
+// Load and unlock the keystore with XCHAIN_PASSPHRASE env var
+// return a transaction authorizer
+func loadPrivateKey(cfg *Config) (*bind.TransactOpts, error) {
+	// TODO take parent dir as keystore
+	path, err := homedir.Expand(cfg.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	raw, err := os.ReadFile(path)
+	// Extract the parent directory from the provided key path to use as the keystore directory
+	keystorePath := filepath.Dir(path)
+	ks := keystore.NewKeyStore(keystorePath, keystore.StandardScryptN, keystore.StandardScryptP)
+	a, err := ks.Find(accounts.Account{Address: common.HexToAddress(cfg.ClientAddr)})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to find key %s: %w", cfg.ClientAddr, err)
 	}
-	var keyJson struct {
-		Type       string
-		PrivateKey string
+	if err := ks.Unlock(a, os.Getenv("XCHAIN_PASSPHRASE")); err != nil {
+		return nil, fmt.Errorf("failed to unlock keystore: %w", err)
 	}
-	err = json.Unmarshal(raw, &keyJson)
-	if err != nil {
-		return nil, err
-	}
-	b64Key := keyJson.PrivateKey
-
-	// Decode the base64 string to bytes
-	keyBytes, err := base64.StdEncoding.DecodeString(b64Key)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse the bytes to an ECDSA private key
-	privateKey, err := x509.ParseECPrivateKey(keyBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return privateKey, nil
+	return bind.NewKeyStoreTransactorWithChainID(ks, a, big.NewInt(int64(cfg.ChainID)))
 }
 
+// Load contract abi at the given path
 func loadAbi(path string) (*abi.ABI, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
