@@ -82,7 +82,7 @@ function parse-address
 end
 
 function parse-id-address
-	 echo $argv | sed -n 's/.*ID address: \+\([tf]0[0-9]\+\).*/\1/p'
+	 echo $argv | sed -n 's/.*ID Address: \+\([tf]0[0-9]\+\).*/\1/p'
 end
 
 function parse-filecoin-address

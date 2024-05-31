@@ -129,17 +129,17 @@ func main() {
 							// Send Tx
 							params, err := packOfferDataParams(cctx, *parsedABI)
 							if err != nil {
-								log.Fatal(err)
+								log.Fatalf("failed to pack offer data params: %v", err)
 							}
 							tx, err := onramp.Transact(auth, "offerData", params)
 							if err != nil {
-								log.Fatal(err)
+								log.Fatalf("failed to send tx: %v", err)
 							}
 							receipt, err := bind.WaitMined(cctx.Context, client, tx)
 							if err != nil {
-								log.Fatal(err)
+								log.Fatalf("failed to wait for tx: %v", err)
 							}
-							log.Printf("Tx %s mined: %d", tx.Hash().Hex(), receipt.Status)
+							log.Printf("Tx %s included: %d", tx.Hash().Hex(), receipt.Status)
 
 							return nil
 						},
