@@ -86,7 +86,7 @@ function parse-id-address
 end
 
 function parse-filecoin-address
-	echo $argv | grep -oP "Filecoin address: \K0x[a-f0-9]+"
+	echo $argv | grep -oP "Filecoin address: \K(t|f)[a-f0-9]+"
 end
 
 function deploy-tokens
