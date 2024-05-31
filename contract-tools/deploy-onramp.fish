@@ -78,15 +78,15 @@ end
 
 #  $argv string output of lotus evm deploy 
 function parse-address
-	 echo $argv | grep -oP "Eth Address: \K0x[a-f0-9]+"
+	 echo $argv | sed -n 's/.*Eth Address: \+\(0x[a-f0-9]\+\).*/\1/p'
 end
 
 function parse-id-address
-	 echo $argv | grep -oP "ID Address: \K(t|f)[0-9]+"
+	 echo $argv | sed -n 's/.*ID address: \+\([tf]0[0-9]\+\).*/\1/p'
 end
 
 function parse-filecoin-address
-	echo $argv | grep -oP "Filecoin address: \K(t|f)[a-f0-9]+"
+	echo $argv | sed -n 's/.*Filecoin address: \+\([tf]4[a-z0-9]\+\).*/\1/p'
 end
 
 function deploy-tokens
