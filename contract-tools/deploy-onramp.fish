@@ -57,7 +57,7 @@ function deploy-onramp
 	cd $LOTUS_EXEC_PATH
 	# Parse address from eth keystore file 
 	set clientAddr (cat $XCHAIN_KEY_PATH | jq '.address' | sed -e 's/\"//g')
-	set filClientAddr (parse-filecoin-addr (./lotus evm stat $clientAddr))
+	set filClientAddr (parse-filecoin-address (./lotus evm stat $clientAddr))
 
 	./lotus state wait-msg --timeout "2m" (./lotus send $filClientAddr 10000)
 	cd $ONRAMP_CODE_PATH
@@ -65,7 +65,7 @@ function deploy-onramp
 
 	jo -a (jo -- ChainID=314 Api="ws://localhost:1234/rpc/v1" -s OnRampAddress="$onrampAddr" KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
-	deploy-tokens $clientAddr
+	deploy-tokens $filClientAddr
 end
 
 #  $argv[1] path to compiled file
