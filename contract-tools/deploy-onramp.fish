@@ -57,7 +57,9 @@ function deploy-onramp
 	cd $LOTUS_EXEC_PATH
 	# Parse address from eth keystore file 
 	set clientAddr (cat $XCHAIN_KEY_PATH | jq '.address' | sed -e 's/\"//g')
+	echo "clientAddr: $clientAddr"
 	set filClientAddr (parse-filecoin-address (./lotus evm stat $clientAddr))
+	echo "filClientAddr: $filClientAddr"
 
 	./lotus state wait-msg --timeout "2m" (./lotus send $filClientAddr 10000)
 	cd $ONRAMP_CODE_PATH
