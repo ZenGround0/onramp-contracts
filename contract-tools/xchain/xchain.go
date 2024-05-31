@@ -212,7 +212,7 @@ type Offer struct {
 	CommP    []byte
 	Duration int64
 	Location string
-	Amount   uint64
+	Amount   *big.Int
 	Token    common.Address
 }
 
@@ -222,11 +222,13 @@ func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
 		return nil, fmt.Errorf("failed to parse cid %w", err)
 	}
 
+	amount := big.NewInt(0).SetUint64(cctx.Uint64(cctx.Args().Get(3)))
+
 	offer := Offer{
 		CommP:    commP.Bytes(),
 		Location: cctx.Args().Get(1),
 		Token:    common.HexToAddress(cctx.Args().Get(2)),
-		Amount:   cctx.Uint64(cctx.Args().Get(3)),
+		Amount:   amount,
 		Duration: 576_000, // For now set a fixed duration
 	}
 
