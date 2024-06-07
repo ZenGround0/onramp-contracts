@@ -8,11 +8,10 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -41,7 +40,7 @@ func main() {
 				Name:  "daemon",
 				Usage: "Start the xchain adapter daemon",
 				Action: func(cctx *cli.Context) error {
-					cfg, err := loadConfig(cctx.String("config"))
+					cfg, err := LoadConfig(cctx.String("config"))
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -53,7 +52,7 @@ func main() {
 					}
 
 					contractAddress := common.HexToAddress(cfg.OnRampAddress)
-					parsedABI, err := loadAbi(cfg.OnRampABIPath)
+					parsedABI, err := LoadAbi(cfg.OnRampABIPath)
 					if err != nil {
 						log.Fatal(err)
 					}
@@ -64,26 +63,10 @@ func main() {
 						Topics:    [][]common.Hash{{parsedABI.Events["DataReady"].ID}},
 					}
 
-					logs := make(chan types.Log)
-					sub, err := client.SubscribeFilterLogs(context.Background(), query, logs)
-					if err != nil {
-						log.Fatal(err)
-					}
-				LOOP:
-					for {
-						select {
-						case <-cctx.Done():
-							break LOOP
-						case err := <-sub.Err():
-							log.Fatal(err)
-						case vLog := <-logs:
-							fmt.Println("Log Data:", vLog.Data)
-							event, err := parsedABI.Unpack("DataReady", vLog.Data)
-							if err != nil {
-								log.Fatal(err)
-							}
-							fmt.Println("Event Parsed:", event)
-						}
+					errQ := SubscribeQuery(cctx.Context, client, contractAddress, *parsedABI, query)
+					for errQ == nil || strings.Contains(errQ.Error(), "read tcp") {
+						log.Printf("ignoring mystery error: %s", errQ)
+						errQ = SubscribeQuery(cctx.Context, client, contractAddress, *parsedABI, query)
 					}
 
 					return nil
@@ -98,7 +81,7 @@ func main() {
 						Usage:     "Offer data by providing file and payment parameters",
 						ArgsUsage: "<commP> <bufferLocation> <token-hex> <token-amount>",
 						Action: func(cctx *cli.Context) error {
-							cfg, err := loadConfig(cctx.String("config"))
+							cfg, err := LoadConfig(cctx.String("config"))
 							if err != nil {
 								log.Fatal(err)
 							}
@@ -111,7 +94,7 @@ func main() {
 
 							// Load onramp contract handle
 							contractAddress := common.HexToAddress(cfg.OnRampAddress)
-							parsedABI, err := loadAbi(cfg.OnRampABIPath)
+							parsedABI, err := LoadAbi(cfg.OnRampABIPath)
 							if err != nil {
 								log.Fatal(err)
 							}
@@ -127,11 +110,11 @@ func main() {
 							}
 
 							// Send Tx
-							params, err := packOfferDataParams(cctx, *parsedABI)
+							offer, err := MakeOffer(cctx.Args().First(), cctx.Args().Get(1), cctx.Args().Get(2), cctx.Uint64(cctx.Args().Get(3)), *parsedABI)
 							if err != nil {
 								log.Fatalf("failed to pack offer data params: %v", err)
 							}
-							tx, err := onramp.Transact(auth, "offerData", params)
+							tx, err := onramp.Transact(auth, "offerData", offer)
 							if err != nil {
 								log.Fatalf("failed to send tx: %v", err)
 							}
@@ -216,27 +199,53 @@ type Offer struct {
 	Token    common.Address
 }
 
-func packOfferDataParams(cctx *cli.Context, abi abi.ABI) ([]byte, error) {
-	commP, err := cid.Decode(cctx.Args().First())
+func SubscribeQuery(ctx context.Context, client *ethclient.Client, contractAddress common.Address, parsedABI abi.ABI, query ethereum.FilterQuery) error {
+	logs := make(chan types.Log)
+	log.Printf("Listening for data ready events on %s\n", contractAddress.Hex())
+	sub, err := client.SubscribeFilterLogs(ctx, query, logs)
+	if err != nil {
+		return err
+	}
+LOOP:
+	for {
+		select {
+		case <-ctx.Done():
+			break LOOP
+		case err := <-sub.Err():
+			return err
+		case vLog := <-logs:
+			fmt.Println("Log Data:", vLog.Data)
+			event, err := parsedABI.Unpack("DataReady", vLog.Data)
+			if err != nil {
+				return err
+			}
+			fmt.Println("Event Parsed:", event)
+		}
+	}
+	return nil
+}
+
+func MakeOffer(cidStr string, location string, token string, amount uint64, abi abi.ABI) (*Offer, error) {
+	commP, err := cid.Decode(cidStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse cid %w", err)
 	}
 
-	amount := big.NewInt(0).SetUint64(cctx.Uint64(cctx.Args().Get(3)))
+	amountBig := big.NewInt(0).SetUint64(amount)
 
 	offer := Offer{
 		CommP:    commP.Bytes(),
-		Location: cctx.Args().Get(1),
-		Token:    common.HexToAddress(cctx.Args().Get(2)),
-		Amount:   amount,
+		Location: location,
+		Token:    common.HexToAddress(token),
+		Amount:   amountBig,
 		Duration: 576_000, // For now set a fixed duration
 	}
 
-	return abi.Pack("offerData", offer)
+	return &offer, nil
 }
 
 // Load Config given path to JSON config file
-func loadConfig(path string) (*Config, error) {
+func LoadConfig(path string) (*Config, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
@@ -267,17 +276,32 @@ func loadConfig(path string) (*Config, error) {
 // Load and unlock the keystore with XCHAIN_PASSPHRASE env var
 // return a transaction authorizer
 func loadPrivateKey(cfg *Config) (*bind.TransactOpts, error) {
-	// TODO take parent dir as keystore
 	path, err := homedir.Expand(cfg.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	// Extract the parent directory from the provided key path to use as the keystore directory
-	keystorePath := filepath.Dir(path)
-	ks := keystore.NewKeyStore(keystorePath, keystore.StandardScryptN, keystore.StandardScryptP)
-	a, err := ks.Find(accounts.Account{Address: common.HexToAddress(cfg.ClientAddr)})
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find key %s: %w", cfg.ClientAddr, err)
+		return nil, fmt.Errorf("failed to open keystore file: %w", err)
+	}
+	defer file.Close()
+	keyJSON, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read key store bytes from file: %w", err)
+	}
+
+	// Create a temporary directory to initialize the per-call keystore
+	tempDir, err := os.MkdirTemp("", "xchain-tmp")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+	ks := keystore.NewKeyStore(tempDir, keystore.StandardScryptN, keystore.StandardScryptP)
+
+	// Import existing key
+	a, err := ks.Import(keyJSON, os.Getenv("XCHAIN_PASSPHRASE"), os.Getenv("XCHAIN_PASSPHRASE"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to import key %s: %w", cfg.ClientAddr, err)
 	}
 	if err := ks.Unlock(a, os.Getenv("XCHAIN_PASSPHRASE")); err != nil {
 		return nil, fmt.Errorf("failed to unlock keystore: %w", err)
@@ -286,7 +310,7 @@ func loadPrivateKey(cfg *Config) (*bind.TransactOpts, error) {
 }
 
 // Load contract abi at the given path
-func loadAbi(path string) (*abi.ABI, error) {
+func LoadAbi(path string) (*abi.ABI, error) {
 	path, err := homedir.Expand(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
