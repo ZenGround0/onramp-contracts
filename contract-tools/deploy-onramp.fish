@@ -1,10 +1,15 @@
-# Set ONRAMP_CODE_PATH, LOTUS_EXEC_PATH, and XCHAIN_KEY_PATH before calling
+#Before calling set: 
+#     ONRAMP_CODE_PATH,
+#     LOTUS_EXEC_PATH,
+#     XCHAIN_KEY_PATH,
+#     XCHAIN_PASSPHRASE,
+#     XCHAIN_ETH_API
+#   
 # Deploys contracts needed for onramp demo
 # Sets up config for data-client and xchain-connector
 function deploy-onramp
 	# Build bytecode from source
 	cd $ONRAMP_CODE_PATH
-	cd ~/code/onramp-contracts
 	forge build
 	set bcProver (get-bytecode out/Prover.sol/DealClient.json)
 	set bcOracle (get-bytecode out/Oracles.sol/ForwardingProofMockBridge.json)
@@ -19,12 +24,20 @@ function deploy-onramp
 	set oracleOut (./lotus evm deploy --hex oracle.bytecode)
 	set onrampOut (./lotus evm deploy --hex onramp.bytecode)
 
-	set -x proverAddr (parse-address $proverOut)
-	set -x oracleAddr (parse-address $oracleOut)
-	set -x onrampAddr (parse-address $onrampOut)
 	set proverIDAddr (parse-id-address $proverOut)
 	set oracleIDAddr (parse-id-address $oracleOut)
 	set onrampIDAddr (parse-id-address $onrampOut)
+	set -x proverAddr (parse-address $proverOut)
+	set -x oracleAddr (parse-address $oracleOut)
+	set -x onrampAddr (parse-address $onrampOut)
+
+
+	echo "Prover Contract Address: $proverAddr"
+	echo "Oracle Contract Address: $oracleAddr"
+	echo "OnRamp Contract Address: $onrampAddr"
+	echo "Prover ID Address: $proverIDAddr"
+	echo "Oracle ID Address: $oracleIDAddr"
+	echo "OnRamp ID Address: $onrampIDAddr"
 
 
 	# Print out Info
@@ -65,9 +78,9 @@ function deploy-onramp
 	cd $ONRAMP_CODE_PATH
 	jq -c '.abi' out/OnRamp.sol/OnRampContract.json > ~/.xchain/onramp-abi.json
 
-	jo -a (jo -- ChainID=314 Api="ws://localhost:1234/rpc/v1" -s OnRampAddress="$onrampAddr" KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
+	jo -a (jo -- ChainID=314 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
-	deploy-tokens $filClientAddr
+	deploy-tokens $clientAddr
 end
 
 #  $argv[1] path to compiled file
@@ -78,17 +91,16 @@ end
 
 #  $argv string output of lotus evm deploy 
 function parse-address
-	 echo $argv | sed -n 's/.*Eth Address: \+\(0x[a-f0-9]\+\).*/\1/p'
+	echo $argv | sed -En 's/.*Eth Address: +(0x[a-f0-9]+).*/\1/p'
 end
 
 function parse-id-address
-	 echo $argv | sed -n 's/.*ID Address: \+\([tf]0[0-9]\+\).*/\1/p'
+	echo $argv | sed -En 's/.*ID Address: +([tf]0[0-9]+).*/\1/p'
 end
 
 function parse-filecoin-address
-	echo $argv | sed -n 's/.*Filecoin address: \+\([tf]4[a-z0-9]\+\).*/\1/p'
+	echo $argv | sed -En 's/.*Filecoin address: +([tf]4[a-z0-9]+).*/\1/p'
 end
-
 function deploy-tokens
 	 cd $ONRAMP_CODE_PATH
 	 forge build
@@ -103,16 +115,16 @@ function deploy-tokens
 
 	 ascii-five
 	 echo -e "~$0.05~$0.05~ 'NICKLE' ~$0.05~$0.05~\n"
-	 # TODO lets see if we can --from an eth addr or if we need to parse-filecoin-addr first
-	 ./lotus evm deploy --from $argv[1] --hex nickle.bytecode
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcNickle 
 
 	 ascii-shell
 	 echo -e "~#!~#!~ 'SHELL' ~#!~#!~\n"	 
-	 ./lotus evm deploy --from $argv[1] --hex cowry.bytecode
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcCowry 
 
 	 ascii-union-jack	 
 	 echo -e "~#L~#L~ 'NEWTON' ~#L~#L~\n"
-	 ./lotus evm deploy --from $argv[1] --hex pound.bytecode
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcPound 
+
 end
 
 # Some ASCII logos to give our erc20s character
