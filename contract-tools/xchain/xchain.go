@@ -206,6 +206,7 @@ func SubscribeQuery(ctx context.Context, client *ethclient.Client, contractAddre
 	if err != nil {
 		return err
 	}
+	defer sub.Unsubscribe()
 LOOP:
 	for {
 		select {
