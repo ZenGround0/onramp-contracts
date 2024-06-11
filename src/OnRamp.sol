@@ -67,7 +67,7 @@ contract PODSIVerifier {
 contract OnRampContract is PODSIVerifier {
      struct Offer {
         bytes commP;
-        int64 duration;
+        uint64 size;
         string location;
         uint256 amount;
         IERC20 token;

@@ -79,7 +79,7 @@ func main() {
 					{
 						Name:      "offer",
 						Usage:     "Offer data by providing file and payment parameters",
-						ArgsUsage: "<commP> <bufferLocation> <token-hex> <token-amount>",
+						ArgsUsage: "<commP> <size> <bufferLocation> <token-hex> <token-amount>",
 						Action: func(cctx *cli.Context) error {
 							cfg, err := LoadConfig(cctx.String("config"))
 							if err != nil {
@@ -110,7 +110,14 @@ func main() {
 							}
 
 							// Send Tx
-							offer, err := MakeOffer(cctx.Args().First(), cctx.Args().Get(1), cctx.Args().Get(2), cctx.Uint64(cctx.Args().Get(3)), *parsedABI)
+							offer, err := MakeOffer(
+								cctx.Args().First(),
+								cctx.Uint64(cctx.Args().Get(1)),
+								cctx.Args().Get(2),
+								cctx.Args().Get(3),
+								cctx.Uint64(cctx.Args().Get(4)),
+								*parsedABI,
+							)
 							if err != nil {
 								log.Fatalf("failed to pack offer data params: %v", err)
 							}
@@ -193,7 +200,7 @@ type Config struct {
 // Mirror OnRamp.sol's `Offer` struct
 type Offer struct {
 	CommP    []byte
-	Duration int64
+	Size     uint64
 	Location string
 	Amount   *big.Int
 	Token    common.Address
@@ -226,7 +233,7 @@ LOOP:
 	return nil
 }
 
-func MakeOffer(cidStr string, location string, token string, amount uint64, abi abi.ABI) (*Offer, error) {
+func MakeOffer(cidStr string, size uint64, location string, token string, amount uint64, abi abi.ABI) (*Offer, error) {
 	commP, err := cid.Decode(cidStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse cid %w", err)
@@ -239,7 +246,7 @@ func MakeOffer(cidStr string, location string, token string, amount uint64, abi 
 		Location: location,
 		Token:    common.HexToAddress(token),
 		Amount:   amountBig,
-		Duration: 576_000, // For now set a fixed duration
+		Size:     size,
 	}
 
 	return &offer, nil
