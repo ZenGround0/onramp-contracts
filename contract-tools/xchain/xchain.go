@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -18,6 +20,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/filecoin-project/go-data-segment/datasegment"
+	"github.com/filecoin-project/go-data-segment/merkletree"
+	filabi "github.com/filecoin-project/go-state-types/abi"
 	"github.com/ipfs/go-cid"
 	"github.com/mitchellh/go-homedir"
 	"github.com/urfave/cli/v2"
@@ -45,28 +50,13 @@ func main() {
 						log.Fatal(err)
 					}
 
-					// Dial network
-					client, err := ethclient.Dial(cfg.Api)
+					ot, err := NewOfferTaker(cfg)
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
-
-					contractAddress := common.HexToAddress(cfg.OnRampAddress)
-					parsedABI, err := LoadAbi(cfg.OnRampABIPath)
+					err = ot.run(cctx.Context)
 					if err != nil {
-						log.Fatal(err)
-					}
-
-					// Listen for notifications
-					query := ethereum.FilterQuery{
-						Addresses: []common.Address{contractAddress},
-						Topics:    [][]common.Hash{{parsedABI.Events["DataReady"].ID}},
-					}
-
-					errQ := SubscribeQuery(cctx.Context, client, contractAddress, *parsedABI, query)
-					for errQ == nil || strings.Contains(errQ.Error(), "read tcp") {
-						log.Printf("ignoring mystery error: %s", errQ)
-						errQ = SubscribeQuery(cctx.Context, client, contractAddress, *parsedABI, query)
+						log.Fatalf("failure while running offer taker: %s", err)
 					}
 
 					return nil
@@ -110,14 +100,16 @@ func main() {
 							}
 
 							// Send Tx
+
 							offer, err := MakeOffer(
 								cctx.Args().First(),
-								cctx.Uint64(cctx.Args().Get(1)),
+								cctx.Args().Get(1),
 								cctx.Args().Get(2),
 								cctx.Args().Get(3),
-								cctx.Uint64(cctx.Args().Get(4)),
+								cctx.Args().Get(4),
 								*parsedABI,
 							)
+
 							if err != nil {
 								log.Fatalf("failed to pack offer data params: %v", err)
 							}
@@ -199,17 +191,225 @@ type Config struct {
 
 // Mirror OnRamp.sol's `Offer` struct
 type Offer struct {
-	CommP    []byte
-	Size     uint64
-	Location string
-	Amount   *big.Int
-	Token    common.Address
+	CommP    []uint8        `json:"commP"`
+	Size     uint64         `json:"size"`
+	Location string         `json:"location"`
+	Amount   *big.Int       `json:"amount"`
+	Token    common.Address `json:"token"`
 }
 
-func SubscribeQuery(ctx context.Context, client *ethclient.Client, contractAddress common.Address, parsedABI abi.ABI, query ethereum.FilterQuery) error {
+func (o *Offer) Piece() (filabi.PieceInfo, error) {
+	pps := filabi.PaddedPieceSize(o.Size)
+	if err := pps.Validate(); err != nil {
+		return filabi.PieceInfo{}, err
+	}
+	_, c, err := cid.CidFromBytes(o.CommP)
+	if err != nil {
+		return filabi.PieceInfo{}, err
+	}
+	return filabi.PieceInfo{
+		Size:     pps,
+		PieceCID: c,
+	}, nil
+}
+
+type offerTaker struct {
+	client         *ethclient.Client   // raw client for log subscriptions
+	onramp         *bind.BoundContract // onramp binding over raw client for message sending
+	auth           *bind.TransactOpts  // auth for message sending
+	abi            *abi.ABI            // onramp abi for log subscription and message sending
+	onrampAddr     common.Address      // onramp address for log subscription
+	ch             chan DataReadyEvent // pass events to seperate goroutine for processing
+	targetDealSize uint64              // how big aggregates should be
+}
+
+func NewOfferTaker(cfg *Config) (*offerTaker, error) {
+	client, err := ethclient.Dial(cfg.Api)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	parsedABI, err := LoadAbi(cfg.OnRampABIPath)
+	if err != nil {
+		return nil, err
+	}
+	contractAddress := common.HexToAddress(cfg.OnRampAddress)
+	onramp := bind.NewBoundContract(contractAddress, *parsedABI, client, client, client)
+
+	auth, err := loadPrivateKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO this should be specified in config
+	targetSize := uint64(2 << 10)
+	return &offerTaker{
+		client:         client,
+		onramp:         onramp,
+		onrampAddr:     contractAddress,
+		auth:           auth,
+		ch:             make(chan DataReadyEvent, 1024), // buffer many events since consumer sometimes waits for chain
+		abi:            parsedABI,
+		targetDealSize: targetSize,
+	}, nil
+}
+
+// Run the two offerTaker persistant process
+//  1. a goroutine listening for new DataReady events
+//  2. a goroutine collecting data and aggregating before commiting
+//     to store and sending to filecoin boost
+func (ot *offerTaker) run(ctx context.Context) error {
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Start listening for events
+	// New DataReady events are passed through the channel to aggregation handling
+	g.Go(func() error {
+		query := ethereum.FilterQuery{
+			Addresses: []common.Address{ot.onrampAddr},
+			Topics:    [][]common.Hash{{ot.abi.Events["DataReady"].ID}},
+		}
+
+		err := ot.SubscribeQuery(ctx, query)
+		for err == nil || strings.Contains(err.Error(), "read tcp") {
+			if err != nil {
+				log.Printf("ignoring mystery error: %s", err)
+			}
+			if ctx.Err() != nil {
+				err = ctx.Err()
+				break
+			}
+			err = ot.SubscribeQuery(ctx, query)
+		}
+		return err
+	})
+
+	// Start aggregatation event handling
+	g.Go(func() error {
+		return ot.runAggregate(ctx)
+	})
+
+	return g.Wait()
+}
+
+const (
+	// PODSI aggregation uses 64 extra bytes per piece
+	pieceOverhead = uint64(64)
+	// Piece CID of small valid car that must be prepended to the aggregation for deal acceptance
+	prefixCARCid = "baga6ea4seaqmazvw4o5nc7ht6emz2n2kb36kzbib3czzwrx5dsz5nog65uxwupq"
+	// Size of the prefix car in bytes
+	prefixCARSizePadded = uint64(256)
+)
+
+func (ot *offerTaker) runAggregate(ctx context.Context) error {
+	pending := make([]DataReadyEvent, 0, 256) // pieces being aggregated, flushed upon commitment
+	total := uint64(0)
+	prefixPiece := filabi.PieceInfo{
+		Size:     filabi.PaddedPieceSize(prefixCARSizePadded),
+		PieceCID: cid.MustParse(prefixCARCid),
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event := <-ot.ch:
+			// Check if the offer is too big to fit in a valid aggregate on its own
+			// TODO: as referenced below there must be a better way when we introspect on the gory details of NewAggregate
+			latestPiece, err := event.Offer.Piece()
+			if err != nil {
+				log.Printf("skipping offer %d, size %d not valid padded piece size ", event.OfferID, event.Offer.Size)
+				continue
+			}
+			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), []filabi.PieceInfo{
+				prefixPiece,
+				latestPiece,
+			})
+			if err != nil {
+				log.Printf("skipping offer %d, size %d exceeds max PODSI packable size", event.OfferID, event.Offer.Size)
+				continue
+			}
+			// TODO: in production we'll maybe want to move data from buffer before we commit to storing it.
+
+			// TODO: Unsorted greedy is a very naive knapsack strategy, production will want something better
+			// TODO: doing all the work of creating an aggregate for every new offer is quite wasteful
+			//      there must be a cheaper way to do this, but for now it is the most expediant without learning
+			//      all the gory edge cases in NewAggregate
+
+			// Turn offers into datasegment pieces
+			pieces := make([]filabi.PieceInfo, len(pending)+1)
+			for i, event := range pending {
+				piece, err := event.Offer.Piece()
+				if err != nil {
+					return err
+				}
+				pieces[i] = piece
+			}
+
+			pieces[len(pending)] = latestPiece
+			// aggregate
+			aggregatePieces := append([]filabi.PieceInfo{
+				prefixPiece,
+			}, pieces...)
+			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), aggregatePieces)
+			if err != nil { // we've overshot, lets commit to just pieces in pending
+				total = 0
+				// Remove the latest offer which took us over
+				pieces = pieces[:len(pieces)-1]
+				aggregatePieces = aggregatePieces[:len(aggregatePieces)-1]
+				a, err := datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), aggregatePieces)
+				if err != nil {
+					return fmt.Errorf("failed to create aggregate from pending, should not be reachable: %w", err)
+				}
+
+				inclProofs := make([]merkletree.ProofData, len(pieces))
+				ids := make([]uint64, len(pieces))
+				for i, piece := range pieces {
+					podsi, err := a.ProofForPieceInfo(piece)
+					if err != nil {
+						return err
+					}
+					ids[i] = pending[i].OfferID
+					inclProofs[i] = podsi.ProofSubtree // Only do data proofs on chain for now not index proofs
+				}
+				aggCommp, err := a.PieceCID()
+				if err != nil {
+					return err
+				}
+				tx, err := ot.onramp.Transact(ot.auth, "commitAggregate", aggCommp.Bytes(), ids, inclProofs, common.HexToAddress("0x0"))
+				if err != nil {
+					return err
+				}
+				receipt, err := bind.WaitMined(ctx, ot.client, tx)
+				if err != nil {
+					return err
+				}
+				log.Printf("Tx %s committing aggregate commp %s included: %d", tx.Hash().Hex(), aggCommp.String(), receipt.Status)
+
+				// Reset queue to empty, add the event that triggered aggregation
+				pending = pending[:0]
+				pending = append(pending, event)
+
+			} else {
+				total += event.Offer.Size
+				pending = append(pending, event)
+				log.Printf("Offer %d added. %d offers pending aggregation with total size=%d\n", event.OfferID, len(pending), total)
+			}
+		}
+	}
+}
+
+type CommitAggregateParams struct {
+	Aggregate       []byte
+	ClaimedIDs      []uint64
+	InclusionProofs []merkletree.ProofData
+	PayoutAddr      common.Address
+}
+
+func (ot *offerTaker) SubscribeQuery(ctx context.Context, query ethereum.FilterQuery) error {
 	logs := make(chan types.Log)
-	log.Printf("Listening for data ready events on %s\n", contractAddress.Hex())
-	sub, err := client.SubscribeFilterLogs(ctx, query, logs)
+	log.Printf("Listening for data ready events on %s\n", ot.onrampAddr.Hex())
+	sub, err := ot.client.SubscribeFilterLogs(ctx, query, logs)
 	if err != nil {
 		return err
 	}
@@ -222,31 +422,88 @@ LOOP:
 		case err := <-sub.Err():
 			return err
 		case vLog := <-logs:
-			fmt.Println("Log Data:", vLog.Data)
-			event, err := parsedABI.Unpack("DataReady", vLog.Data)
+			event, err := parseDataReadyEvent(vLog, ot.abi)
 			if err != nil {
 				return err
 			}
-			fmt.Println("Event Parsed:", event)
+			log.Printf("Sending offer %d for aggregation\n", event.OfferID)
+			// This is where we should make packing decisions.
+			// In the current prototype we accept all offers regardless
+			// of payment type, amount or duration
+			ot.ch <- *event
 		}
 	}
 	return nil
 }
 
-func MakeOffer(cidStr string, size uint64, location string, token string, amount uint64, abi abi.ABI) (*Offer, error) {
+// Define a Go struct to match the DataReady event from the OnRamp contract
+type DataReadyEvent struct {
+	Offer   Offer
+	OfferID uint64
+}
+
+// Function to parse the DataReady event from log data
+func parseDataReadyEvent(log types.Log, abi *abi.ABI) (*DataReadyEvent, error) {
+	eventData, err := abi.Unpack("DataReady", log.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unpack 'DataReady' event: %w", err)
+	}
+
+	// Assuming eventData is correctly ordered as per the event definition in the Solidity contract
+	if len(eventData) != 2 {
+		return nil, fmt.Errorf("unexpected number of fields for 'DataReady' event: got %d, want 2", len(eventData))
+	}
+
+	offerID, ok := eventData[1].(uint64)
+	if !ok {
+		return nil, fmt.Errorf("invalid type for offerID, expected uint64, got %T", eventData[1])
+	}
+
+	offerDataRaw := eventData[0]
+	// JSON round trip to deserialize to offer
+	bs, err := json.Marshal(offerDataRaw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal raw offer data to json: %w", err)
+	}
+	var offer Offer
+	err = json.Unmarshal(bs, &offer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal raw offer data to nice offer struct: %w", err)
+	}
+
+	return &DataReadyEvent{
+		OfferID: offerID,
+		Offer:   offer,
+	}, nil
+}
+
+func HandleOffer(offer *Offer) error {
+	return nil
+}
+
+func MakeOffer(cidStr string, sizeStr string, location string, token string, amountStr string, abi abi.ABI) (*Offer, error) {
 	commP, err := cid.Decode(cidStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse cid %w", err)
 	}
 
-	amountBig := big.NewInt(0).SetUint64(amount)
+	size, err := strconv.Atoi(sizeStr)
+	if err != nil {
+		return nil, err
+	}
+	amount, err := strconv.Atoi(amountStr)
+	if err != nil {
+		return nil, err
+	}
+
+	amountBig := big.NewInt(0).SetUint64(uint64(amount))
 
 	offer := Offer{
 		CommP:    commP.Bytes(),
 		Location: location,
 		Token:    common.HexToAddress(token),
 		Amount:   amountBig,
-		Size:     size,
+		Size:     uint64(size),
 	}
 
 	return &offer, nil
