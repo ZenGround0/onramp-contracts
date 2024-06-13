@@ -39,7 +39,6 @@ function deploy-onramp
 	echo "Oracle ID Address: $oracleIDAddr"
 	echo "OnRamp ID Address: $onrampIDAddr"
 
-
 	# Print out Info
 	echo -e "~*~*~Oracle~*~*~\n"
 	string join \n $oracleOut[3..]
@@ -80,7 +79,7 @@ function deploy-onramp
 
 	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
-	deploy-tokens $clientAddr
+	deploy-tokens $onrampAddr
 end
 
 #  $argv[1] path to compiled file
@@ -92,6 +91,11 @@ end
 #  $argv string output of lotus evm deploy 
 function parse-address
 	echo $argv | sed -En 's/.*Eth Address: +(0x[a-f0-9]+).*/\1/p'
+end
+
+#  $argv string output of cast contract create display
+function parse-address-cast-create
+	echo $argv | sed -En 's/.*contractAddress[[:space:]]+([0-9a-fA-Fx]+).*/\1/p'
 end
 
 function parse-id-address
@@ -108,6 +112,9 @@ function deploy-tokens
 	 set bcCowry (get-bytecode out/Token.sol/BronzeCowry.json)
 	 set bcPound (get-bytecode out/Token.sol/DebasedTowerPoundSterling.json)
 
+	 # Approve 10^9 tokens allowance for onramp contract
+	 set approveCallData (cast calldata "approve(address,uint256)" $argv[1] 1000000000)
+
 	 cd $LOTUS_EXEC_PATH
 	 echo $bcNickle > nickle.bytecode
 	 echo $bcCowry > cowry.bytecode
@@ -115,16 +122,25 @@ function deploy-tokens
 
 	 ascii-five
 	 echo -e "~$0.05~$0.05~ 'NICKLE' ~$0.05~$0.05~\n"
-	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcNickle 
+	 set nickleCreate (cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcNickle)
+	 string join \n $nickleCreate
+	 echo $nickleCreate[1..3]
+	 set nickleAddr (parse-address-cast-create $nickleCreate)
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API $nickleAddr $approveCallData
 
 	 ascii-shell
 	 echo -e "~#!~#!~ 'SHELL' ~#!~#!~\n"	 
-	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcCowry 
+	 set cowryCreate (cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcCowry)
+     string join \n $cowryCreate
+	 set cowryAddr (parse-address-cast-create $cowryCreate)
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API $cowryAddr $approveCallData
 
 	 ascii-union-jack	 
 	 echo -e "~#L~#L~ 'NEWTON' ~#L~#L~\n"
-	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcPound 
-
+	 set poundCreate (cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API --create $bcPound) 
+	 string join \n $poundCreate
+	 set poundAddr (parse-address-cast-create $poundCreate)
+	 cast send --keystore $XCHAIN_KEY_PATH --password "$XCHAIN_PASSPHRASE" --rpc-url $XCHAIN_ETH_API $poundAddr $approveCallData
 end
 
 # Some ASCII logos to give our erc20s character
