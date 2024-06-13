@@ -111,7 +111,7 @@ contract OnRampContract is PODSIVerifier {
         for (uint64 i = 0; i < claimedIDs.length; i++) {
             uint64 offerID = claimedIDs[i];
             offerIDs[i] = offerID;
-            require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(offers[offerID].commP), Cid.cidToPieceCommitment(aggregate)), "Proof verification failed");
+            require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(aggregate), Cid.cidToPieceCommitment(offers[offerID].commP)), "Proof verification failed");
         }
         aggregations[nextAggregateID] = offerIDs;
         aggregationPayout[nextAggregateID] = payoutAddr;
