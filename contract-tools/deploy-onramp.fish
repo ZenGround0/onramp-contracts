@@ -1,6 +1,7 @@
 #Before calling set: 
 #     ONRAMP_CODE_PATH,
 #     LOTUS_EXEC_PATH,
+#     BOOST_EXEC_PATH,
 #     XCHAIN_KEY_PATH,
 #     XCHAIN_PASSPHRASE,
 #     XCHAIN_ETH_API
@@ -77,9 +78,12 @@ function deploy-onramp
 	cd $ONRAMP_CODE_PATH
 	jq -c '.abi' out/OnRamp.sol/OnRampContract.json > ~/.xchain/onramp-abi.json
 
+	cd $BOOST_EXEC_PATH
+    set -x localhostMaddr (./boostd net listen | sed -n '/\/ip4\/127\.0\.0\.1/p')
+
 	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" \
 		KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json \
-		BufferPath=~/.xchain/buffer BufferPort=5077) > ~/.xchain/config.json
+		BufferPath=~/.xchain/buffer BufferPort=5077 BoostMAddr="$localhostMaddr" LotusAPI="$XCHAIN_ETH_API") > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
 	deploy-tokens $onrampAddr
 end

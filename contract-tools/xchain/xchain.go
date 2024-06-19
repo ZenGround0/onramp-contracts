@@ -24,10 +24,17 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	types2 "github.com/filecoin-project/boost/transport/types"
 	"github.com/filecoin-project/go-data-segment/datasegment"
 	"github.com/filecoin-project/go-data-segment/merkletree"
 	filabi "github.com/filecoin-project/go-state-types/abi"
+	lapi "github.com/filecoin-project/lotus/api"
+	lcli "github.com/filecoin-project/lotus/cli"
+	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/mitchellh/go-homedir"
 	"github.com/urfave/cli/v2"
 )
@@ -111,11 +118,16 @@ func main() {
 						if !isAgg {
 							return nil
 						}
-						ot, err := NewOfferTaker(cfg)
+						lapi, closer, err := lcli.GetGatewayAPI(cctx)
+						if err != nil {
+							log.Fatalf("failure to open lotus api: %w", err)
+						}
+						defer closer()
+						a, err := NewAggregator(cfg, lapi)
 						if err != nil {
 							return err
 						}
-						return ot.run(ctx)
+						return a.run(ctx)
 					})
 					return g.Wait()
 				},
@@ -204,6 +216,8 @@ type Config struct {
 	OnRampABIPath string
 	BufferPath    string
 	BufferPort    int
+	BoostMAddr    string // should contain both transport multiaddr and pid
+	LotusAPI      string
 }
 
 // Mirror OnRamp.sol's `Offer` struct
@@ -241,9 +255,12 @@ type aggregator struct {
 	transferLk     sync.RWMutex              // Mutex protecting transfers map
 	transferID     int                       // ID of the next transfer
 	targetDealSize uint64                    // how big aggregates should be
+	host           host.Host                 // libp2p host for deal protocol to boost
+	spDealAddr     *peer.AddrInfo            // address to reach boost (or other) deal v 1.2 provider
+	lotusAPI       lapi.Api                  // Lotus API for determining deal start epoch and collateral bounds
 }
 
-func NewOfferTaker(cfg *Config) (*aggregator, error) {
+func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 	client, err := ethclient.Dial(cfg.Api)
 	if err != nil {
 		log.Fatal(err)
@@ -260,6 +277,16 @@ func NewOfferTaker(cfg *Config) (*aggregator, error) {
 	if err != nil {
 		return nil, err
 	}
+	// TODO consider allowing config to specify listen addr and pid, for now it shouldn't matter as boost will entertain anybody
+	h, err := libp2p.New()
+	if err != nil {
+		return nil, err
+	}
+
+	spMaddr, err := peer.AddrInfoFromString(cfg.BoostMAddr)
+	if err != nil {
+		return nil, err
+	}
 
 	// TODO this should be specified in config
 	targetSize := uint64(2 << 10)
@@ -273,6 +300,9 @@ func NewOfferTaker(cfg *Config) (*aggregator, error) {
 		transferLk:     sync.RWMutex{},
 		abi:            parsedABI,
 		targetDealSize: targetSize,
+		host:           h,
+		spDealAddr:     spMaddr,
+		lotusAPI:       lotusAPI,
 	}, nil
 }
 
@@ -350,10 +380,14 @@ const (
 	prefixCARSizePadded = uint64(256)
 	// Data transfer port
 	transferPort = 1728
+	// libp2p identifier for latest deal protocol
+	DealProtocolv120 = "/fil/storage/mk/1.2.0"
 )
 
 func (a *aggregator) runAggregate(ctx context.Context) error {
-	pending := make([]DataReadyEvent, 0, 256) // pieces being aggregated, flushed upon commitment
+	// pieces being aggregated, flushed upon commitment
+	// Invariant: the pieces in the pending queue can always make a valid aggregate w.r.t a.targetDealSize
+	pending := make([]DataReadyEvent, 0, 256)
 	total := uint64(0)
 	prefixPiece := filabi.PieceInfo{
 		Size:     filabi.PaddedPieceSize(prefixCARSizePadded),
@@ -412,6 +446,11 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("failed to create aggregate from pending, should not be reachable: %w", err)
 				}
+				indexRaw, err := agg.Index.MarshalBinary()
+				if err != nil {
+					return err
+				}
+				fmt.Printf("index raw: %x\n", indexRaw)
 
 				inclProofs := make([]merkletree.ProofData, len(pieces))
 				ids := make([]uint64, len(pieces))
@@ -438,11 +477,11 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				log.Printf("Tx %s committing aggregate commp %s included: %d", tx.Hash().Hex(), aggCommp.String(), receipt.Status)
 
 				// Schedule aggregate data for transfer
-				locations := make([]string, len(pending)+1)
+				// After adding to the map this is now served in aggregator.transferHandler at `/?id={transferID}`
+				locations := make([]string, len(pending))
 				for i, event := range pending {
 					locations[i] = event.Offer.Location
 				}
-				locations[len(pending)] = latestEvent.Offer.Location
 				var transferID int
 				a.transferLk.Lock()
 				transferID = a.transferID
@@ -452,10 +491,38 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				}
 				a.transferID++
 				a.transferLk.Unlock()
+				log.Printf("Transfer ID %d scheduled for aggregate %s", transferID, aggCommp.String())
 
-				// Make publish storage deal data and send it to boost addr
-				// TODO boost addr added to config
-				// TODO libp2p host created on startup and made accessible to the *ot
+				// Make publish storage deal data and send it to sp addr
+
+				// Connect to sp addr
+				// TODO should we have persistent connection instead of reconnect each time ? idk
+				if err := a.host.Connect(ctx, *a.spDealAddr); err != nil {
+					return fmt.Errorf("failed to connect to peer %s: %w", a.spDealAddr.ID, err)
+				}
+				x, err := a.host.Peerstore().FirstSupportedProtocol(a.spDealAddr.ID, DealProtocolv120)
+				if err != nil {
+					return fmt.Errorf("getting protocols for peer %s: %w", a.spDealAddr.ID, err)
+				}
+				if len(x) == 0 {
+					return fmt.Errorf("cannot make a deal with storage provider %s because it does not support protocol version 1.2.0", a.spDealAddr.ID)
+				}
+
+				// Construct deal
+				dealUuid := uuid.New()
+				params := types2.TransferParams{
+					URL: fmt.Sprintf("http://localhost:%d/?id=%d", transferPort, transferID)
+				}
+				paramsBytes, err := json.Marshal(transferParams)
+				if err != nil {
+					return fmt.Errorf("failed to marshal transfer params: %w", err)
+				}
+				transfer := types2.Transfer{
+					Type:     "http",
+					ClientID: fmt.Sprintf("%d", transferID),
+					Params:   paramsBytes,
+					Size:     a.targetDealSize - a.targetDealSize/128, // aggregate for transfer is not fr32 encoded
+				}
 
 				// Reset queue to empty, add the event that triggered aggregation
 				pending = pending[:0]
@@ -480,6 +547,7 @@ type lazyHTTPReader struct {
 func (l *lazyHTTPReader) Read(p []byte) (int, error) {
 	if !l.started {
 		// Start the HTTP request on the first Read call
+		fmt.Printf("reading %s\n", l.url)
 		resp, err := http.Get(l.url)
 		if err != nil {
 			return 0, err
@@ -545,7 +613,10 @@ func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to create aggregate reader: %s", err), http.StatusInternalServerError)
 		return
 	}
-	io.Copy(w, aggReader)
+	_, err = io.Copy(w, aggReader)
+	if err != nil {
+		log.Printf("failed to write aggregate stream: %s", err)
+	}
 }
 
 type AggregateTransfer struct {
