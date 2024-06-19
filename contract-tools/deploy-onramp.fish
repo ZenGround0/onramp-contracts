@@ -77,7 +77,9 @@ function deploy-onramp
 	cd $ONRAMP_CODE_PATH
 	jq -c '.abi' out/OnRamp.sol/OnRampContract.json > ~/.xchain/onramp-abi.json
 
-	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json) > ~/.xchain/config.json
+	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" \
+		KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json \
+		BufferPath=~/.xchain/buffer BufferPort=5077) > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
 	deploy-tokens $onrampAddr
 end

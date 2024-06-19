@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
@@ -44,22 +48,76 @@ func main() {
 			{
 				Name:  "daemon",
 				Usage: "Start the xchain adapter daemon",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "buffer-service",
+						Usage: "Run a buffer server",
+						Value: false,
+					},
+					&cli.BoolFlag{
+						Name:  "aggregation-service",
+						Usage: "Run an aggregation server",
+						Value: false,
+					},
+				},
 				Action: func(cctx *cli.Context) error {
+					isBuffer := cctx.Bool("buffer-service")
+					isAgg := cctx.Bool("aggregation-service")
+					if !isBuffer && !isAgg { // default to running aggregator
+						isAgg = true
+					}
+
 					cfg, err := LoadConfig(cctx.String("config"))
 					if err != nil {
 						log.Fatal(err)
 					}
 
-					ot, err := NewOfferTaker(cfg)
-					if err != nil {
-						return err
-					}
-					err = ot.run(cctx.Context)
-					if err != nil {
-						log.Fatalf("failure while running offer taker: %s", err)
-					}
+					g, ctx := errgroup.WithContext(cctx.Context)
+					g.Go(func() error {
+						if !isBuffer {
+							return nil
+						}
+						path, err := homedir.Expand(cfg.BufferPath)
+						if err != nil {
+							return err
+						}
+						if err := os.MkdirAll(path, os.ModePerm); err != nil {
+							return err
+						}
 
-					return nil
+						srv, err := NewBufferHTTPService(cfg.BufferPath)
+						if err != nil {
+							return &http.MaxBytesError{}
+						}
+						http.HandleFunc("/put", srv.PutHandler)
+						http.HandleFunc("/get", srv.GetHandler)
+
+						fmt.Printf("Server starting on port %d\n", cfg.BufferPort)
+						server := &http.Server{
+							Addr:    fmt.Sprintf(":%d", cfg.BufferPort),
+							Handler: nil, // http.DefaultServeMux
+						}
+						go func() {
+							if err := server.ListenAndServe(); err != http.ErrServerClosed {
+								log.Fatalf("Buffer HTTP server ListenAndServe: %v", err)
+							}
+						}()
+						<-ctx.Done()
+
+						// Context is cancelled, shut down the server
+						return server.Shutdown(context.Background())
+					})
+					g.Go(func() error {
+						if !isAgg {
+							return nil
+						}
+						ot, err := NewOfferTaker(cfg)
+						if err != nil {
+							return err
+						}
+						return ot.run(ctx)
+					})
+					return g.Wait()
 				},
 			},
 			{
@@ -128,49 +186,6 @@ func main() {
 					},
 				},
 			},
-			{
-				Name:  "buffer",
-				Usage: "Store data between offer and commit",
-				Subcommands: []*cli.Command{
-					{
-						Name:  "put",
-						Usage: "Put content into the buffer from stdin",
-						Action: func(c *cli.Context) error {
-							bfs := NewBufferFS()
-							// Directly pass os.Stdin to the Put method
-							id, err := bfs.Put(os.Stdin)
-							if err != nil {
-								return err
-							}
-							fmt.Printf("Content stored with ID: %d\n", id)
-							return nil
-						},
-					},
-					{
-						Name:  "get",
-						Usage: "Get a file from the buffer by ID",
-						Action: func(c *cli.Context) error {
-							if c.Args().Len() < 1 {
-								return fmt.Errorf("please specify the file ID")
-							}
-							id, err := strconv.Atoi(c.Args().Get(0))
-							if err != nil {
-								return fmt.Errorf("invalid ID format")
-							}
-							bfs := NewBufferFS()
-							reader, err := bfs.Get(id)
-							if err != nil {
-								return err
-							}
-							_, err = io.Copy(os.Stdout, reader)
-							if err != nil {
-								return err
-							}
-							return nil
-						},
-					},
-				},
-			},
 		},
 	}
 
@@ -187,6 +202,8 @@ type Config struct {
 	KeyPath       string
 	ClientAddr    string
 	OnRampABIPath string
+	BufferPath    string
+	BufferPort    int
 }
 
 // Mirror OnRamp.sol's `Offer` struct
@@ -213,17 +230,20 @@ func (o *Offer) Piece() (filabi.PieceInfo, error) {
 	}, nil
 }
 
-type offerTaker struct {
-	client         *ethclient.Client   // raw client for log subscriptions
-	onramp         *bind.BoundContract // onramp binding over raw client for message sending
-	auth           *bind.TransactOpts  // auth for message sending
-	abi            *abi.ABI            // onramp abi for log subscription and message sending
-	onrampAddr     common.Address      // onramp address for log subscription
-	ch             chan DataReadyEvent // pass events to seperate goroutine for processing
-	targetDealSize uint64              // how big aggregates should be
+type aggregator struct {
+	client         *ethclient.Client         // raw client for log subscriptions
+	onramp         *bind.BoundContract       // onramp binding over raw client for message sending
+	auth           *bind.TransactOpts        // auth for message sending
+	abi            *abi.ABI                  // onramp abi for log subscription and message sending
+	onrampAddr     common.Address            // onramp address for log subscription
+	ch             chan DataReadyEvent       // pass events to seperate goroutine for processing
+	transfers      map[int]AggregateTransfer // track aggregate data awaiting transfer
+	transferLk     sync.RWMutex              // Mutex protecting transfers map
+	transferID     int                       // ID of the next transfer
+	targetDealSize uint64                    // how big aggregates should be
 }
 
-func NewOfferTaker(cfg *Config) (*offerTaker, error) {
+func NewOfferTaker(cfg *Config) (*aggregator, error) {
 	client, err := ethclient.Dial(cfg.Api)
 	if err != nil {
 		log.Fatal(err)
@@ -243,12 +263,14 @@ func NewOfferTaker(cfg *Config) (*offerTaker, error) {
 
 	// TODO this should be specified in config
 	targetSize := uint64(2 << 10)
-	return &offerTaker{
+	return &aggregator{
 		client:         client,
 		onramp:         onramp,
 		onrampAddr:     contractAddress,
 		auth:           auth,
 		ch:             make(chan DataReadyEvent, 1024), // buffer many events since consumer sometimes waits for chain
+		transfers:      make(map[int]AggregateTransfer),
+		transferLk:     sync.RWMutex{},
 		abi:            parsedABI,
 		targetDealSize: targetSize,
 	}, nil
@@ -258,10 +280,8 @@ func NewOfferTaker(cfg *Config) (*offerTaker, error) {
 //  1. a goroutine listening for new DataReady events
 //  2. a goroutine collecting data and aggregating before commiting
 //     to store and sending to filecoin boost
-func (ot *offerTaker) run(ctx context.Context) error {
-
+func (ot *aggregator) run(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
-
 	// Start listening for events
 	// New DataReady events are passed through the channel to aggregation handling
 	g.Go(func() error {
@@ -289,19 +309,50 @@ func (ot *offerTaker) run(ctx context.Context) error {
 		return ot.runAggregate(ctx)
 	})
 
+	// Start handling data transfer requests
+	g.Go(func() error {
+		http.HandleFunc("/", ot.transferHandler)
+		fmt.Printf("Server starting on port %d\n", transferPort)
+		server := &http.Server{
+			Addr:    fmt.Sprintf(":%d", transferPort),
+			Handler: nil, // http.DefaultServeMux
+		}
+		go func() {
+			if err := server.ListenAndServe(); err != http.ErrServerClosed {
+				log.Fatalf("Transfer HTTP server ListenAndServe: %v", err)
+			}
+		}()
+		<-ctx.Done()
+
+		// Context is cancelled, shut down the server
+		if err := server.Shutdown(context.Background()); err != nil {
+			log.Fatalf("Transfer HTTP server Shutdown: %v", err)
+		}
+
+		return http.ListenAndServe(fmt.Sprintf(":%d", transferPort), nil)
+	})
+
 	return g.Wait()
 }
 
 const (
 	// PODSI aggregation uses 64 extra bytes per piece
-	pieceOverhead = uint64(64)
-	// Piece CID of small valid car that must be prepended to the aggregation for deal acceptance
-	prefixCARCid = "baga6ea4seaqmazvw4o5nc7ht6emz2n2kb36kzbib3czzwrx5dsz5nog65uxwupq"
-	// Size of the prefix car in bytes
+	// pieceOverhead = uint64(64) TODO uncomment this when we are smarter about determining threshold crossing
+	// Piece CID of small valid car (below) that must be prepended to the aggregation for deal acceptance
+	prefixCARCid = "baga6ea4seaqiklhpuei4wz7x3wwpvnul3sscfyrz2dpi722vgpwlolfky2dmwey"
+	// Hex of the prefix car file
+	prefixCAR = "3aa265726f6f747381d82a58250001701220b9ecb605f194801ee8a8355014e7e6e62966f94ccb6081" +
+		"631e82217872209dae6776657273696f6e014101551220704a26a32a76cf3ab66ffe41eb27adefefe9c93206960bb0" +
+		"147b9ed5e1e948b0576861744966487567684576657265747449494957617352696768743f5601701220b9ecb605f1" +
+		"94801ee8a8355014e7e6e62966f94ccb6081631e82217872209dae122c0a2401551220704a26a32a76cf3ab66ffe41" +
+		"eb27adefefe9c93206960bb0147b9ed5e1e948b012026576181d0a020801"
+	// Size of the padded prefix car in bytes
 	prefixCARSizePadded = uint64(256)
+	// Data transfer port
+	transferPort = 1728
 )
 
-func (ot *offerTaker) runAggregate(ctx context.Context) error {
+func (a *aggregator) runAggregate(ctx context.Context) error {
 	pending := make([]DataReadyEvent, 0, 256) // pieces being aggregated, flushed upon commitment
 	total := uint64(0)
 	prefixPiece := filabi.PieceInfo{
@@ -313,20 +364,20 @@ func (ot *offerTaker) runAggregate(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case event := <-ot.ch:
+		case latestEvent := <-a.ch:
 			// Check if the offer is too big to fit in a valid aggregate on its own
 			// TODO: as referenced below there must be a better way when we introspect on the gory details of NewAggregate
-			latestPiece, err := event.Offer.Piece()
+			latestPiece, err := latestEvent.Offer.Piece()
 			if err != nil {
-				log.Printf("skipping offer %d, size %d not valid padded piece size ", event.OfferID, event.Offer.Size)
+				log.Printf("skipping offer %d, size %d not valid padded piece size ", latestEvent.OfferID, latestEvent.Offer.Size)
 				continue
 			}
-			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), []filabi.PieceInfo{
+			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(a.targetDealSize), []filabi.PieceInfo{
 				prefixPiece,
 				latestPiece,
 			})
 			if err != nil {
-				log.Printf("skipping offer %d, size %d exceeds max PODSI packable size", event.OfferID, event.Offer.Size)
+				log.Printf("skipping offer %d, size %d exceeds max PODSI packable size", latestEvent.OfferID, latestEvent.Offer.Size)
 				continue
 			}
 			// TODO: in production we'll maybe want to move data from buffer before we commit to storing it.
@@ -351,13 +402,13 @@ func (ot *offerTaker) runAggregate(ctx context.Context) error {
 			aggregatePieces := append([]filabi.PieceInfo{
 				prefixPiece,
 			}, pieces...)
-			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), aggregatePieces)
+			_, err = datasegment.NewAggregate(filabi.PaddedPieceSize(a.targetDealSize), aggregatePieces)
 			if err != nil { // we've overshot, lets commit to just pieces in pending
 				total = 0
 				// Remove the latest offer which took us over
 				pieces = pieces[:len(pieces)-1]
 				aggregatePieces = aggregatePieces[:len(aggregatePieces)-1]
-				a, err := datasegment.NewAggregate(filabi.PaddedPieceSize(ot.targetDealSize), aggregatePieces)
+				agg, err := datasegment.NewAggregate(filabi.PaddedPieceSize(a.targetDealSize), aggregatePieces)
 				if err != nil {
 					return fmt.Errorf("failed to create aggregate from pending, should not be reachable: %w", err)
 				}
@@ -365,51 +416,147 @@ func (ot *offerTaker) runAggregate(ctx context.Context) error {
 				inclProofs := make([]merkletree.ProofData, len(pieces))
 				ids := make([]uint64, len(pieces))
 				for i, piece := range pieces {
-					podsi, err := a.ProofForPieceInfo(piece)
+					podsi, err := agg.ProofForPieceInfo(piece)
 					if err != nil {
 						return err
 					}
 					ids[i] = pending[i].OfferID
 					inclProofs[i] = podsi.ProofSubtree // Only do data proofs on chain for now not index proofs
 				}
-				aggCommp, err := a.PieceCID()
+				aggCommp, err := agg.PieceCID()
 				if err != nil {
 					return err
 				}
-				tx, err := ot.onramp.Transact(ot.auth, "commitAggregate", aggCommp.Bytes(), ids, inclProofs, common.HexToAddress("0x0"))
+				tx, err := a.onramp.Transact(a.auth, "commitAggregate", aggCommp.Bytes(), ids, inclProofs, common.HexToAddress("0x0"))
 				if err != nil {
 					return err
 				}
-				receipt, err := bind.WaitMined(ctx, ot.client, tx)
+				receipt, err := bind.WaitMined(ctx, a.client, tx)
 				if err != nil {
 					return err
 				}
 				log.Printf("Tx %s committing aggregate commp %s included: %d", tx.Hash().Hex(), aggCommp.String(), receipt.Status)
 
+				// Schedule aggregate data for transfer
+				locations := make([]string, len(pending)+1)
+				for i, event := range pending {
+					locations[i] = event.Offer.Location
+				}
+				locations[len(pending)] = latestEvent.Offer.Location
+				var transferID int
+				a.transferLk.Lock()
+				transferID = a.transferID
+				a.transfers[transferID] = AggregateTransfer{
+					locations: locations,
+					agg:       agg,
+				}
+				a.transferID++
+				a.transferLk.Unlock()
+
+				// Make publish storage deal data and send it to boost addr
+				// TODO boost addr added to config
+				// TODO libp2p host created on startup and made accessible to the *ot
+
 				// Reset queue to empty, add the event that triggered aggregation
 				pending = pending[:0]
-				pending = append(pending, event)
+				pending = append(pending, latestEvent)
 
 			} else {
-				total += event.Offer.Size
-				pending = append(pending, event)
-				log.Printf("Offer %d added. %d offers pending aggregation with total size=%d\n", event.OfferID, len(pending), total)
+				total += latestEvent.Offer.Size
+				pending = append(pending, latestEvent)
+				log.Printf("Offer %d added. %d offers pending aggregation with total size=%d\n", latestEvent.OfferID, len(pending), total)
 			}
 		}
 	}
 }
 
-type CommitAggregateParams struct {
-	Aggregate       []byte
-	ClaimedIDs      []uint64
-	InclusionProofs []merkletree.ProofData
-	PayoutAddr      common.Address
+// LazyHTTPReader is an io.Reader that fetches data from an HTTP URL on the first Read call
+type lazyHTTPReader struct {
+	url     string
+	reader  io.ReadCloser
+	started bool
 }
 
-func (ot *offerTaker) SubscribeQuery(ctx context.Context, query ethereum.FilterQuery) error {
+func (l *lazyHTTPReader) Read(p []byte) (int, error) {
+	if !l.started {
+		// Start the HTTP request on the first Read call
+		resp, err := http.Get(l.url)
+		if err != nil {
+			return 0, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return 0, fmt.Errorf("failed to fetch data: %s", resp.Status)
+		}
+		l.reader = resp.Body
+		l.started = true
+	}
+	return l.reader.Read(p)
+}
+
+func (l *lazyHTTPReader) Close() error {
+	if l.reader != nil {
+		return l.reader.Close()
+	}
+	return nil
+}
+
+// Handle data transfer requests from boost
+func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "ID is required", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	a.transferLk.RLock()
+	transfer, ok := a.transfers[id]
+	a.transferLk.RUnlock()
+	if !ok {
+		http.Error(w, "No data found", http.StatusNotFound)
+		return
+	}
+
+	// Set the header to indicate that the response will be streamed
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Transfer-Encoding", "chunked")
+
+	// First write the CAR prefix to the response
+	prefixCARBytes, err := hex.DecodeString(prefixCAR)
+	if err != nil {
+		http.Error(w, "Failed to decode CAR prefix", http.StatusInternalServerError)
+		return
+	}
+
+	readers := []io.Reader{bytes.NewReader(prefixCARBytes)}
+	// Fetch each sub piece from its buffer location and write to response
+	for _, url := range transfer.locations {
+		lazyReader := &lazyHTTPReader{url: url}
+		readers = append(readers, lazyReader)
+		defer lazyReader.Close()
+	}
+	aggReader, err := transfer.agg.AggregateObjectReader(readers)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to create aggregate reader: %s", err), http.StatusInternalServerError)
+		return
+	}
+	io.Copy(w, aggReader)
+}
+
+type AggregateTransfer struct {
+	locations []string
+	agg       *datasegment.Aggregate
+}
+
+func (a *aggregator) SubscribeQuery(ctx context.Context, query ethereum.FilterQuery) error {
 	logs := make(chan types.Log)
-	log.Printf("Listening for data ready events on %s\n", ot.onrampAddr.Hex())
-	sub, err := ot.client.SubscribeFilterLogs(ctx, query, logs)
+	log.Printf("Listening for data ready events on %s\n", a.onrampAddr.Hex())
+	sub, err := a.client.SubscribeFilterLogs(ctx, query, logs)
 	if err != nil {
 		return err
 	}
@@ -422,7 +569,7 @@ LOOP:
 		case err := <-sub.Err():
 			return err
 		case vLog := <-logs:
-			event, err := parseDataReadyEvent(vLog, ot.abi)
+			event, err := parseDataReadyEvent(vLog, a.abi)
 			if err != nil {
 				return err
 			}
@@ -430,7 +577,7 @@ LOOP:
 			// This is where we should make packing decisions.
 			// In the current prototype we accept all offers regardless
 			// of payment type, amount or duration
-			ot.ch <- *event
+			a.ch <- *event
 		}
 	}
 	return nil
