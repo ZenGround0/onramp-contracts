@@ -11,9 +11,11 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -24,18 +26,29 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	types2 "github.com/filecoin-project/boost/transport/types"
+	boosttypes "github.com/filecoin-project/boost/storagemarket/types"
+	boosttypes2 "github.com/filecoin-project/boost/transport/types"
+	"github.com/filecoin-project/go-address"
+	cborutil "github.com/filecoin-project/go-cbor-util"
 	"github.com/filecoin-project/go-data-segment/datasegment"
 	"github.com/filecoin-project/go-data-segment/merkletree"
+	"github.com/filecoin-project/go-jsonrpc"
+	inet "github.com/libp2p/go-libp2p/core/network"
+
 	filabi "github.com/filecoin-project/go-state-types/abi"
-	lapi "github.com/filecoin-project/lotus/api"
-	lcli "github.com/filecoin-project/lotus/cli"
+	fbig "github.com/filecoin-project/go-state-types/big"
+	builtintypes "github.com/filecoin-project/go-state-types/builtin"
+	"github.com/filecoin-project/go-state-types/builtin/v9/market"
+	"github.com/filecoin-project/go-state-types/crypto"
+	"github.com/filecoin-project/lotus/api/v0api"
+	lotustypes "github.com/filecoin-project/lotus/chain/types"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/mitchellh/go-homedir"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 )
 
@@ -118,12 +131,7 @@ func main() {
 						if !isAgg {
 							return nil
 						}
-						lapi, closer, err := lcli.GetGatewayAPI(cctx)
-						if err != nil {
-							log.Fatalf("failure to open lotus api: %w", err)
-						}
-						defer closer()
-						a, err := NewAggregator(cfg, lapi)
+						a, err := NewAggregator(ctx, cfg)
 						if err != nil {
 							return err
 						}
@@ -211,12 +219,13 @@ type Config struct {
 	ChainID       int
 	Api           string
 	OnRampAddress string
+	ProverAddress string
 	KeyPath       string
 	ClientAddr    string
 	OnRampABIPath string
 	BufferPath    string
 	BufferPort    int
-	BoostMAddr    string // should contain both transport multiaddr and pid
+	ProviderAddr  string
 	LotusAPI      string
 }
 
@@ -250,6 +259,7 @@ type aggregator struct {
 	auth           *bind.TransactOpts        // auth for message sending
 	abi            *abi.ABI                  // onramp abi for log subscription and message sending
 	onrampAddr     common.Address            // onramp address for log subscription
+	proverAddr     common.Address            // prover address for client contract deal
 	ch             chan DataReadyEvent       // pass events to seperate goroutine for processing
 	transfers      map[int]AggregateTransfer // track aggregate data awaiting transfer
 	transferLk     sync.RWMutex              // Mutex protecting transfers map
@@ -257,10 +267,52 @@ type aggregator struct {
 	targetDealSize uint64                    // how big aggregates should be
 	host           host.Host                 // libp2p host for deal protocol to boost
 	spDealAddr     *peer.AddrInfo            // address to reach boost (or other) deal v 1.2 provider
-	lotusAPI       lapi.Api                  // Lotus API for determining deal start epoch and collateral bounds
+	spActorAddr    address.Address           // address of the storage provider actor
+	lotusAPI       v0api.FullNode            // Lotus API for determining deal start epoch and collateral bounds
+	cleanup        func()                    // cleanup function to call on shutdown
 }
 
-func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
+// Thank you @ribasushi
+type (
+	LotusDaemonAPIClientV0 = v0api.FullNode
+	LotusMinerAPIClientV0  = v0api.StorageMiner
+	LotusBeaconEntry       = lotustypes.BeaconEntry
+	LotusTS                = lotustypes.TipSet
+	LotusTSK               = lotustypes.TipSetKey
+)
+
+var hasV0Suffix = regexp.MustCompile(`\/rpc\/v0\/?\z`)
+
+func NewLotusDaemonAPIClientV0(ctx context.Context, url string, timeoutSecs int, bearerToken string) (LotusDaemonAPIClientV0, jsonrpc.ClientCloser, error) {
+	if timeoutSecs == 0 {
+		timeoutSecs = 30
+	}
+	hdr := make(http.Header, 1)
+	if bearerToken != "" {
+		hdr["Authorization"] = []string{"Bearer " + bearerToken}
+	}
+
+	if !hasV0Suffix.MatchString(url) {
+		url += "/rpc/v0"
+	}
+
+	c := new(v0api.FullNodeStruct)
+	closer, err := jsonrpc.NewMergeClient(
+		ctx,
+		url,
+		"Filecoin",
+		[]interface{}{&c.Internal, &c.CommonStruct.Internal},
+		hdr,
+		// deliberately do not use jsonrpc.WithErrors(api.RPCErrors)
+		jsonrpc.WithTimeout(time.Duration(timeoutSecs)*time.Second),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c, closer, nil
+}
+
+func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 	client, err := ethclient.Dial(cfg.Api)
 	if err != nil {
 		log.Fatal(err)
@@ -270,8 +322,9 @@ func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 	if err != nil {
 		return nil, err
 	}
-	contractAddress := common.HexToAddress(cfg.OnRampAddress)
-	onramp := bind.NewBoundContract(contractAddress, *parsedABI, client, client, client)
+	proverContractAddress := common.HexToAddress(cfg.ProverAddress)
+	onRampContractAddress := common.HexToAddress(cfg.OnRampAddress)
+	onramp := bind.NewBoundContract(onRampContractAddress, *parsedABI, client, client, client)
 
 	auth, err := loadPrivateKey(cfg)
 	if err != nil {
@@ -283,9 +336,37 @@ func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 		return nil, err
 	}
 
-	spMaddr, err := peer.AddrInfoFromString(cfg.BoostMAddr)
+	lAPI, closer, err := NewLotusDaemonAPIClientV0(ctx, cfg.LotusAPI, 1, "")
 	if err != nil {
 		return nil, err
+	}
+
+	// Get maddr for dialing boost from on chain miner actor
+	providerAddr, err := address.NewFromString(cfg.ProviderAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse provider address: %w", err)
+	}
+	minfo, err := lAPI.StateMinerInfo(ctx, providerAddr, lotustypes.EmptyTSK)
+	if err != nil {
+		return nil, err
+	}
+	if minfo.PeerId == nil {
+		return nil, fmt.Errorf("sp has no peer id set on chain")
+	}
+	var maddrs []multiaddr.Multiaddr
+	for _, mma := range minfo.Multiaddrs {
+		ma, err := multiaddr.NewMultiaddrBytes(mma)
+		if err != nil {
+			return nil, fmt.Errorf("storage provider %s had invalid multiaddrs in their info: %w", providerAddr, err)
+		}
+		maddrs = append(maddrs, ma)
+	}
+	if len(maddrs) == 0 {
+		return nil, fmt.Errorf("storage provider %s has no multiaddrs set on-chain", providerAddr)
+	}
+	psPeerInfo := &peer.AddrInfo{
+		ID:    *minfo.PeerId,
+		Addrs: maddrs,
 	}
 
 	// TODO this should be specified in config
@@ -293,7 +374,8 @@ func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 	return &aggregator{
 		client:         client,
 		onramp:         onramp,
-		onrampAddr:     contractAddress,
+		onrampAddr:     onRampContractAddress,
+		proverAddr:     proverContractAddress,
 		auth:           auth,
 		ch:             make(chan DataReadyEvent, 1024), // buffer many events since consumer sometimes waits for chain
 		transfers:      make(map[int]AggregateTransfer),
@@ -301,8 +383,12 @@ func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 		abi:            parsedABI,
 		targetDealSize: targetSize,
 		host:           h,
-		spDealAddr:     spMaddr,
-		lotusAPI:       lotusAPI,
+		spDealAddr:     psPeerInfo,
+		spActorAddr:    providerAddr,
+		lotusAPI:       lAPI,
+		cleanup: func() {
+			closer()
+		},
 	}, nil
 }
 
@@ -310,17 +396,18 @@ func NewAggregator(cfg *Config, lotusAPI lapi.Api) (*aggregator, error) {
 //  1. a goroutine listening for new DataReady events
 //  2. a goroutine collecting data and aggregating before commiting
 //     to store and sending to filecoin boost
-func (ot *aggregator) run(ctx context.Context) error {
+func (a *aggregator) run(ctx context.Context) error {
+	defer a.cleanup()
 	g, ctx := errgroup.WithContext(ctx)
 	// Start listening for events
 	// New DataReady events are passed through the channel to aggregation handling
 	g.Go(func() error {
 		query := ethereum.FilterQuery{
-			Addresses: []common.Address{ot.onrampAddr},
-			Topics:    [][]common.Hash{{ot.abi.Events["DataReady"].ID}},
+			Addresses: []common.Address{a.onrampAddr},
+			Topics:    [][]common.Hash{{a.abi.Events["DataReady"].ID}},
 		}
 
-		err := ot.SubscribeQuery(ctx, query)
+		err := a.SubscribeQuery(ctx, query)
 		for err == nil || strings.Contains(err.Error(), "read tcp") {
 			if err != nil {
 				log.Printf("ignoring mystery error: %s", err)
@@ -329,19 +416,19 @@ func (ot *aggregator) run(ctx context.Context) error {
 				err = ctx.Err()
 				break
 			}
-			err = ot.SubscribeQuery(ctx, query)
+			err = a.SubscribeQuery(ctx, query)
 		}
 		return err
 	})
 
 	// Start aggregatation event handling
 	g.Go(func() error {
-		return ot.runAggregate(ctx)
+		return a.runAggregate(ctx)
 	})
 
 	// Start handling data transfer requests
 	g.Go(func() error {
-		http.HandleFunc("/", ot.transferHandler)
+		http.HandleFunc("/", a.transferHandler)
 		fmt.Printf("Server starting on port %d\n", transferPort)
 		server := &http.Server{
 			Addr:    fmt.Sprintf(":%d", transferPort),
@@ -382,6 +469,10 @@ const (
 	transferPort = 1728
 	// libp2p identifier for latest deal protocol
 	DealProtocolv120 = "/fil/storage/mk/1.2.0"
+	// Delay to start deal at. For 2k devnet 4 second block time this is 2 minutes TODO Config
+	dealDelayEpochs = 30
+	// Storage deal duration, TODO figure out what to do about this, either comes from offer or config
+	dealDuration = 518400 // 6 months (on mainnet)
 )
 
 func (a *aggregator) runAggregate(ctx context.Context) error {
@@ -493,35 +584,9 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				a.transferLk.Unlock()
 				log.Printf("Transfer ID %d scheduled for aggregate %s", transferID, aggCommp.String())
 
-				// Make publish storage deal data and send it to sp addr
-
-				// Connect to sp addr
-				// TODO should we have persistent connection instead of reconnect each time ? idk
-				if err := a.host.Connect(ctx, *a.spDealAddr); err != nil {
-					return fmt.Errorf("failed to connect to peer %s: %w", a.spDealAddr.ID, err)
-				}
-				x, err := a.host.Peerstore().FirstSupportedProtocol(a.spDealAddr.ID, DealProtocolv120)
+				err = a.sendDeal(ctx, aggCommp, transferID)
 				if err != nil {
-					return fmt.Errorf("getting protocols for peer %s: %w", a.spDealAddr.ID, err)
-				}
-				if len(x) == 0 {
-					return fmt.Errorf("cannot make a deal with storage provider %s because it does not support protocol version 1.2.0", a.spDealAddr.ID)
-				}
-
-				// Construct deal
-				dealUuid := uuid.New()
-				params := types2.TransferParams{
-					URL: fmt.Sprintf("http://localhost:%d/?id=%d", transferPort, transferID)
-				}
-				paramsBytes, err := json.Marshal(transferParams)
-				if err != nil {
-					return fmt.Errorf("failed to marshal transfer params: %w", err)
-				}
-				transfer := types2.Transfer{
-					Type:     "http",
-					ClientID: fmt.Sprintf("%d", transferID),
-					Params:   paramsBytes,
-					Size:     a.targetDealSize - a.targetDealSize/128, // aggregate for transfer is not fr32 encoded
+					log.Printf("[ERROR] failed to send deal: %s", err)
 				}
 
 				// Reset queue to empty, add the event that triggered aggregation
@@ -534,6 +599,126 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				log.Printf("Offer %d added. %d offers pending aggregation with total size=%d\n", latestEvent.OfferID, len(pending), total)
 			}
 		}
+	}
+}
+
+// Send deal data to the configured SP deal making address (boost node)
+// The deal is made with the configured prover client contract
+// Heavily inspired by boost client
+func (a *aggregator) sendDeal(ctx context.Context, aggCommp cid.Cid, transferID int) error {
+	if err := a.host.Connect(ctx, *a.spDealAddr); err != nil {
+		return fmt.Errorf("failed to connect to peer %s: %w", a.spDealAddr.ID, err)
+	}
+	x, err := a.host.Peerstore().FirstSupportedProtocol(a.spDealAddr.ID, DealProtocolv120)
+	if err != nil {
+		return fmt.Errorf("getting protocols for peer %s: %w", a.spDealAddr.ID, err)
+	}
+	if len(x) == 0 {
+		return fmt.Errorf("cannot make a deal with storage provider %s because it does not support protocol version 1.2.0", a.spDealAddr.ID)
+	}
+
+	// Construct deal
+	dealUuid := uuid.New()
+	log.Printf("making deal for commp %s, UUID=%s\n", aggCommp.String(), dealUuid)
+	transferParams := boosttypes2.HttpRequest{
+		URL: fmt.Sprintf("http://localhost:%d/?id=%d", transferPort, transferID),
+	}
+	paramsBytes, err := json.Marshal(transferParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal transfer params: %w", err)
+	}
+	transfer := boosttypes.Transfer{
+		Type:     "http",
+		ClientID: fmt.Sprintf("%d", transferID),
+		Params:   paramsBytes,
+		Size:     a.targetDealSize - a.targetDealSize/128, // aggregate for transfer is not fr32 encoded
+	}
+
+	bounds, err := a.lotusAPI.StateDealProviderCollateralBounds(ctx, filabi.PaddedPieceSize(a.targetDealSize), false, lotustypes.EmptyTSK)
+	if err != nil {
+		return fmt.Errorf("failed to get collateral bounds: %w", err)
+	}
+	providerCollateral := fbig.Div(fbig.Mul(bounds.Min, fbig.NewInt(6)), fbig.NewInt(5)) // add 20% as boost client does
+	tipset, err := a.lotusAPI.ChainHead(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get chain head: %w", err)
+	}
+	filHeight := tipset.Height()
+	dealStart := filHeight + dealDelayEpochs
+	dealEnd := dealStart + dealDuration
+	filClient, err := address.NewDelegatedAddress(builtintypes.EthereumAddressManagerActorID, a.proverAddr[:])
+	if err != nil {
+		return fmt.Errorf("failed to translate onramp address (%s) into a "+
+			"Filecoin f4 address: %w", a.onrampAddr.Hex(), err)
+	}
+
+	proposal := market.ClientDealProposal{
+		Proposal: market.DealProposal{
+			PieceCID:             aggCommp,
+			PieceSize:            filabi.PaddedPieceSize(a.targetDealSize),
+			VerifiedDeal:         false,
+			Client:               filClient,
+			Provider:             a.spActorAddr,
+			StartEpoch:           dealStart,
+			EndEpoch:             dealEnd,
+			StoragePricePerEpoch: fbig.NewInt(0),
+			ProviderCollateral:   providerCollateral,
+			//Label:                , // TOOD we might need to set this, we'll see
+		},
+		// Signature is unchecked since client is smart contract
+		ClientSignature: crypto.Signature{
+			Type: crypto.SigTypeBLS,
+			Data: []byte{0xc0, 0xff, 0xee},
+		},
+	}
+
+	dealParams := boosttypes.DealParams{
+		DealUUID:           dealUuid,
+		ClientDealProposal: proposal,
+		DealDataRoot:       aggCommp,
+		IsOffline:          false,
+		Transfer:           transfer,
+		RemoveUnsealedCopy: false,
+		SkipIPNIAnnounce:   false,
+	}
+
+	s, err := a.host.NewStream(ctx, a.spDealAddr.ID, DealProtocolv120)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	var resp boosttypes.DealResponse
+	if err := doRpc(ctx, s, &dealParams, &resp); err != nil {
+		return fmt.Errorf("send proposal rpc: %w", err)
+	}
+	if !resp.Accepted {
+		return fmt.Errorf("deal proposal rejected: %s", resp.Message)
+	}
+	return nil
+}
+
+func doRpc(ctx context.Context, s inet.Stream, req interface{}, resp interface{}) error {
+	errc := make(chan error)
+	go func() {
+		if err := cborutil.WriteCborRPC(s, req); err != nil {
+			errc <- fmt.Errorf("failed to send request: %w", err)
+			return
+		}
+
+		if err := cborutil.ReadCborRPC(s, resp); err != nil {
+			errc <- fmt.Errorf("failed to read response: %w", err)
+			return
+		}
+
+		errc <- nil
+	}()
+
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

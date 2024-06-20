@@ -73,17 +73,16 @@ function deploy-onramp
 	echo "clientAddr: $clientAddr"
 	set filClientAddr (parse-filecoin-address (./lotus evm stat $clientAddr))
 	echo "filClientAddr: $filClientAddr"
+	set "providerAddr" (./lotus state list miners | seq 1q) # for lotus devent there is only one miner
 
 	./lotus state wait-msg --timeout "2m" (./lotus send $filClientAddr 10000)
 	cd $ONRAMP_CODE_PATH
 	jq -c '.abi' out/OnRamp.sol/OnRampContract.json > ~/.xchain/onramp-abi.json
 
-	cd $BOOST_EXEC_PATH
-    set -x localhostMaddr (./boostd net listen | sed -n '/\/ip4\/127\.0\.0\.1/p')
-
 	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" \
 		KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json \
-		BufferPath=~/.xchain/buffer BufferPort=5077 BoostMAddr="$localhostMaddr" LotusAPI="$XCHAIN_ETH_API") > ~/.xchain/config.json
+		BufferPath=~/.xchain/buffer BufferPort=5077 ProviderAddr="$providerAddr" \
+		LotusAPI="$XCHAIN_ETH_API" ProverAddr="$proverAddr") > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
 	deploy-tokens $onrampAddr
 end
