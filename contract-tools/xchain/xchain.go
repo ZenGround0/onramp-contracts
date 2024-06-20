@@ -442,11 +442,7 @@ func (a *aggregator) run(ctx context.Context) error {
 		<-ctx.Done()
 
 		// Context is cancelled, shut down the server
-		if err := server.Shutdown(context.Background()); err != nil {
-			log.Fatalf("Transfer HTTP server Shutdown: %v", err)
-		}
-
-		return http.ListenAndServe(fmt.Sprintf(":%d", transferPort), nil)
+		return server.Shutdown(context.Background())
 	})
 
 	return g.Wait()
@@ -469,8 +465,8 @@ const (
 	transferPort = 1728
 	// libp2p identifier for latest deal protocol
 	DealProtocolv120 = "/fil/storage/mk/1.2.0"
-	// Delay to start deal at. For 2k devnet 4 second block time this is 2 minutes TODO Config
-	dealDelayEpochs = 30
+	// Delay to start deal at. For 2k devnet 4 second block time this is 13.3 minutes TODO Config
+	dealDelayEpochs = 200
 	// Storage deal duration, TODO figure out what to do about this, either comes from offer or config
 	dealDuration = 518400 // 6 months (on mainnet)
 )
@@ -537,11 +533,6 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("failed to create aggregate from pending, should not be reachable: %w", err)
 				}
-				indexRaw, err := agg.Index.MarshalBinary()
-				if err != nil {
-					return err
-				}
-				fmt.Printf("index raw: %x\n", indexRaw)
 
 				inclProofs := make([]merkletree.ProofData, len(pieces))
 				ids := make([]uint64, len(pieces))
@@ -601,6 +592,28 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 		}
 	}
 }
+
+/*
+	Failure predicitons
+	- Boost rejects deal related to client, provider or signature
+	- Boost rejects deal on other params
+	- Lotus api doesn't work -- bad addr
+	- Lotus api doesn't work -- bad auth
+	- Not writing to libp2p properly
+	- libp2p set up wrong
+	- Transfer failure on url
+	- Transfer failure timeout
+
+Failure reality
+	- typo in miner lotus command getting miner actor addr in deploy-onramp.fish
+	- jo num /str prob on prover addr
+	- lotus api addr had too much suffix
+	- something weird was happening with ws:// addres so switched to http
+	- deal start param: [ERROR] failed to send deal: deal proposal rejected: cannot seal a sector before 429
+	- deal transfer: Error: data-transfer failed: can't determine deal size from the head request, no header -- this is an interesting one, apparently HTTP HEAD is a thing
+
+
+*/
 
 // Send deal data to the configured SP deal making address (boost node)
 // The deal is made with the configured prover client contract
@@ -778,6 +791,7 @@ func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
 	// Set the header to indicate that the response will be streamed
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Content-Length", strconv.Itoa(int(a.targetDealSize-a.targetDealSize/128)))
 
 	// First write the CAR prefix to the response
 	prefixCARBytes, err := hex.DecodeString(prefixCAR)
