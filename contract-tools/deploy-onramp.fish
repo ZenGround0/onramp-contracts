@@ -82,7 +82,8 @@ function deploy-onramp
 	jo -a (jo -- ChainID=31415926 Api="$XCHAIN_ETH_API" -s OnRampAddress="$onrampAddr" \
 		KeyPath="$XCHAIN_KEY_PATH" ClientAddr="$clientAddr" OnRampABIPath=~/.xchain/onramp-abi.json \
 		BufferPath=~/.xchain/buffer BufferPort=5077 ProviderAddr="$providerAddr" \
-		LotusAPI="ws://localhost:1234" -s ProverAddr="$proverAddr") > ~/.xchain/config.json
+		LotusAPI="http://localhost:1234" -s ProverAddr="$proverAddr" \
+		-s PayoutAddr="0x0C0FFEEC0FFEEC0FFEEC0FFEEC0FFEEC0FEECAFE") > ~/.xchain/config.json
 	echo "config written to ~/.xchain/config.json" 
 	deploy-tokens $onrampAddr
 end

@@ -107,15 +107,16 @@ contract OnRampContract is PODSIVerifier {
 
     function commitAggregate(bytes calldata aggregate, uint64[] calldata claimedIDs, ProofData[] calldata inclusionProofs, address payoutAddr) external {
         uint64[] memory offerIDs = new uint64[](claimedIDs.length);
+        uint64 aggId = nextAggregateID++;
         // Prove all offers are committed by aggregate commP 
         for (uint64 i = 0; i < claimedIDs.length; i++) {
             uint64 offerID = claimedIDs[i];
             offerIDs[i] = offerID;
             require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(aggregate), Cid.cidToPieceCommitment(offers[offerID].commP)), "Proof verification failed");
         }
-        aggregations[nextAggregateID] = offerIDs;
-        aggregationPayout[nextAggregateID] = payoutAddr;
-        commPToAggregateID[aggregate] = nextAggregateID;
+        aggregations[aggId] = offerIDs;
+        aggregationPayout[aggId] = payoutAddr;
+        commPToAggregateID[aggregate] = aggId;
     }
 
     function verifyDataStored(uint64 aggID, uint idx, uint64 offerID) external view returns (bool) {
@@ -126,8 +127,10 @@ contract OnRampContract is PODSIVerifier {
     }
 
     // Called by oracle to prove the data is stored
-    function proveDataStored(uint64 aggID) external {
+    function proveDataStored( DataAttestation calldata attestation) external {
         require(msg.sender == dataProofOracle, "Only oracle can prove data stored");
+        uint64 aggID = commPToAggregateID[attestation.commP];
+        require(aggID != 0, "Aggregate not found");
 
         // transfer payment to the receiver
         for (uint i = 0; i < aggregations[aggID].length; i++) {

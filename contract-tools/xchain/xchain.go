@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
@@ -208,6 +209,13 @@ func main() {
 			},
 		},
 	}
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+	go func() {
+		<-signalChan
+		fmt.Println("Ctrl-c received. Shutting down...")
+		os.Exit(0)
+	}()
 
 	err := app.Run(os.Args)
 	if err != nil {
@@ -219,9 +227,10 @@ type Config struct {
 	ChainID       int
 	Api           string
 	OnRampAddress string
-	ProverAddress string
+	ProverAddr    string
 	KeyPath       string
 	ClientAddr    string
+	PayoutAddr    string
 	OnRampABIPath string
 	BufferPath    string
 	BufferPort    int
@@ -260,6 +269,7 @@ type aggregator struct {
 	abi            *abi.ABI                  // onramp abi for log subscription and message sending
 	onrampAddr     common.Address            // onramp address for log subscription
 	proverAddr     common.Address            // prover address for client contract deal
+	payoutAddr     common.Address            // aggregator payout address for receiving funds
 	ch             chan DataReadyEvent       // pass events to seperate goroutine for processing
 	transfers      map[int]AggregateTransfer // track aggregate data awaiting transfer
 	transferLk     sync.RWMutex              // Mutex protecting transfers map
@@ -322,8 +332,9 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 	if err != nil {
 		return nil, err
 	}
-	proverContractAddress := common.HexToAddress(cfg.ProverAddress)
+	proverContractAddress := common.HexToAddress(cfg.ProverAddr)
 	onRampContractAddress := common.HexToAddress(cfg.OnRampAddress)
+	payoutAddress := common.HexToAddress(cfg.PayoutAddr)
 	onramp := bind.NewBoundContract(onRampContractAddress, *parsedABI, client, client, client)
 
 	auth, err := loadPrivateKey(cfg)
@@ -376,6 +387,7 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 		onramp:         onramp,
 		onrampAddr:     onRampContractAddress,
 		proverAddr:     proverContractAddress,
+		payoutAddr:     payoutAddress,
 		auth:           auth,
 		ch:             make(chan DataReadyEvent, 1024), // buffer many events since consumer sometimes waits for chain
 		transfers:      make(map[int]AggregateTransfer),
@@ -388,6 +400,7 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 		lotusAPI:       lAPI,
 		cleanup: func() {
 			closer()
+			fmt.Printf("done with lotus api closer\n")
 		},
 	}, nil
 }
@@ -418,6 +431,7 @@ func (a *aggregator) run(ctx context.Context) error {
 			}
 			err = a.SubscribeQuery(ctx, query)
 		}
+		fmt.Printf("context done exiting subscribe query\n")
 		return err
 	})
 
@@ -440,7 +454,7 @@ func (a *aggregator) run(ctx context.Context) error {
 			}
 		}()
 		<-ctx.Done()
-
+		fmt.Printf("context done about to shut down server\n")
 		// Context is cancelled, shut down the server
 		return server.Shutdown(context.Background())
 	})
@@ -484,6 +498,7 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			fmt.Printf("ctx done shutting down aggregation")
 			return nil
 		case latestEvent := <-a.ch:
 			// Check if the offer is too big to fit in a valid aggregate on its own
@@ -548,7 +563,7 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				tx, err := a.onramp.Transact(a.auth, "commitAggregate", aggCommp.Bytes(), ids, inclProofs, common.HexToAddress("0x0"))
+				tx, err := a.onramp.Transact(a.auth, "commitAggregate", aggCommp.Bytes(), ids, inclProofs, a.payoutAddr)
 				if err != nil {
 					return err
 				}
@@ -592,28 +607,6 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 		}
 	}
 }
-
-/*
-	Failure predicitons
-	- Boost rejects deal related to client, provider or signature
-	- Boost rejects deal on other params
-	- Lotus api doesn't work -- bad addr
-	- Lotus api doesn't work -- bad auth
-	- Not writing to libp2p properly
-	- libp2p set up wrong
-	- Transfer failure on url
-	- Transfer failure timeout
-
-Failure reality
-	- typo in miner lotus command getting miner actor addr in deploy-onramp.fish
-	- jo num /str prob on prover addr
-	- lotus api addr had too much suffix
-	- something weird was happening with ws:// addres so switched to http
-	- deal start param: [ERROR] failed to send deal: deal proposal rejected: cannot seal a sector before 429
-	- deal transfer: Error: data-transfer failed: can't determine deal size from the head request, no header -- this is an interesting one, apparently HTTP HEAD is a thing
-
-
-*/
 
 // Send deal data to the configured SP deal making address (boost node)
 // The deal is made with the configured prover client contract
@@ -790,7 +783,6 @@ func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Set the header to indicate that the response will be streamed
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Transfer-Encoding", "chunked")
 	w.Header().Set("Content-Length", strconv.Itoa(int(a.targetDealSize-a.targetDealSize/128)))
 
 	// First write the CAR prefix to the response
