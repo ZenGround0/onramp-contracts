@@ -762,6 +762,13 @@ func (l *lazyHTTPReader) Close() error {
 
 // Handle data transfer requests from boost
 func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(int(a.targetDealSize-a.targetDealSize/128)))
+	if r.Method == "HEAD" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	idStr := r.URL.Query().Get("id")
 	if idStr == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
@@ -780,11 +787,6 @@ func (a *aggregator) transferHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No data found", http.StatusNotFound)
 		return
 	}
-
-	// Set the header to indicate that the response will be streamed
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.Itoa(int(a.targetDealSize-a.targetDealSize/128)))
-
 	// First write the CAR prefix to the response
 	prefixCARBytes, err := hex.DecodeString(prefixCAR)
 	if err != nil {
