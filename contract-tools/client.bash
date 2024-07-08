@@ -19,6 +19,3 @@ export COMMP=$(echo "$HASH_OUT" | sed -nE 's/CommPCid: (.*)/\1/p')
 export SIZE=$(echo "$HASH_OUT" | sed -nE 's/Padded piece: *([0-9]+) bytes/\1/p')
 echo "> xchain/xchain client offer $COMMP $SIZE $BUFFER_ADDR $2 $3 "
 xchain/xchain client offer $COMMP $SIZE "$BUFFER_ADDR" $2 $3 
-
-
-rm "$CAR_FILE_PATH"

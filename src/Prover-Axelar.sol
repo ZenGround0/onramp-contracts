@@ -16,6 +16,9 @@ import { FilAddresses } from "lib/filecoin-solidity/contracts/v0.8/utils/FilAddr
 import { DataAttestation, IBridgeContract } from "./Oracles.sol";
 import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
 import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
+import { IAxelarGateway } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
+import { IAxelarGasService } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol';
+
 
 using CBOR for CBOR.CBORBuffer;
 
@@ -23,11 +26,13 @@ contract DealClient is AxelarExecutable {
     using AccountCBOR for *;
     using MarketCBOR for *;
 
+    IAxelarGasService public immutable gasService;
     uint64 public constant AUTHENTICATE_MESSAGE_METHOD_NUM = 2643134072;
     uint64 public constant DATACAP_RECEIVER_HOOK_METHOD_NUM = 3726118371;
     uint64 public constant MARKET_NOTIFY_DEAL_METHOD_NUM = 4186741094;
     address public constant MARKET_ACTOR_ETH_ADDRESS = address(0xff00000000000000000000000000000000000005);
     address public constant DATACAP_ACTOR_ETH_ADDRESS = address(0xfF00000000000000000000000000000000000007);
+    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with 1 FIL 
 
     enum Status {
         None,
@@ -40,13 +45,23 @@ contract DealClient is AxelarExecutable {
     mapping(bytes => Status) public pieceStatus;
     mapping(int => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
 
-    IBridgeContract public bridgeContract;
+    string destinationAddress;
+    string destinationChain;
 
-    function setBridgeContract(address _bridgeContract) external {
-        if (address(bridgeContract) == address(0)) {
-            bridgeContract = IBridgeContract(_bridgeContract);
+    constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) {
+        gasService = IAxelarGasService(_gasReceiver);
+    }
+
+    function setOracle(string calldata _destinationAddress, string calldata _destinationChain) external {
+        if (destinationAddress == "") {
+            destinationAddress = _destinationAddress;
         } else {
-            revert("Bridge contract already set");
+            revert("Destination address already set");
+        }
+        if (destinationChain == "") {
+            destinationChain = _destinationChain;
+        } else {
+            revert("Destination chain already set");
         }
     }
 
@@ -67,10 +82,26 @@ contract DealClient is AxelarExecutable {
 
         pieceDeals[proposal.piece_cid.data] = mdnp.dealId;
         pieceStatus[proposal.piece_cid.data] = Status.DealPublished;
-
+        
+        uint256 gasFunds = AXELAR_GAS_FEE;
         int64 duration = CommonTypes.ChainEpoch.unwrap(proposal.end_epoch) - CommonTypes.ChainEpoch.unwrap(proposal.start_epoch);
         DataAttestation memory attest = DataAttestation(proposal.piece_cid.data, duration, mdnp.dealId, uint256(Status.DealPublished));
-        bridgeContract._execute('FIL', addressToHexString(address(this)), abi.encode(attest));
+        bytes memory payload = abi.encode(attest);
+
+        if (providerGasFunds[proposal.provider] >= AXELAR_GAS_FEE) {
+            providerGasFunds[proposal.provider] -= AXELAR_GAS_FEE;
+        } else {
+            gasFunds = providerGasFunds[proposal.provider];
+            providerGasFunds[proposal.provider] = 0;
+        }
+        gasService.payNativeGasForContractCall{value: gasFunds}(
+            address(this),
+            destinationChain,
+            destinationAddress,
+            payload,
+            msg.sender
+        );
+        gateway.callContract(this.destinationChain, this.destinationAddress, payload);
     }
 
     // handle_filecoin_method is the universal entry point for any evm based
