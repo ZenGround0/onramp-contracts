@@ -13,7 +13,7 @@ import { BigInts } from "lib/filecoin-solidity/contracts/v0.8/utils/BigInts.sol"
 import { CBOR } from "solidity-cborutils/contracts/CBOR.sol";
 import { Misc } from "lib/filecoin-solidity/contracts/v0.8/utils/Misc.sol";
 import { FilAddresses } from "lib/filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol";
-import { DataAttestation, IBridgeContract } from "./Oracles.sol";
+import { DataAttestation, IBridgeContract, StringsEqual } from "./Oracles.sol";
 import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
 import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
 import { IAxelarGateway } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
@@ -43,30 +43,30 @@ contract DealClient is AxelarExecutable {
 
     mapping(bytes => uint64) public pieceDeals; // commP -> deal ID
     mapping(bytes => Status) public pieceStatus;
-    mapping(int => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
+    mapping(bytes => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
 
-    string destinationAddress;
-    string destinationChain;
+    string public destinationAddress;
+    string public destinationChain;
 
     constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) {
         gasService = IAxelarGasService(_gasReceiver);
     }
 
     function setOracle(string calldata _destinationAddress, string calldata _destinationChain) external {
-        if (destinationAddress == "") {
+        if (bytes(destinationAddress).length == 0 ) {
             destinationAddress = _destinationAddress;
         } else {
-            revert("Destination address already set");
+            revert("Destination address already set 666");
         }
-        if (destinationChain == "") {
+        if (bytes(destinationChain).length == 0) {
             destinationChain = _destinationChain;
         } else {
-            revert("Destination chain already set");
+            revert("Destination chain already set 666");
         }
     }
 
-    function addGasFunds(uint64 providerID) external payable {
-        providerGasFunds[providerID] += msg.value;
+    function addGasFunds(bytes calldata providerAddrData) external payable {
+        providerGasFunds[providerAddrData] += msg.value;
     }
 
     // dealNotify is the callback from the market actor into the contract at the end
@@ -83,16 +83,19 @@ contract DealClient is AxelarExecutable {
         pieceDeals[proposal.piece_cid.data] = mdnp.dealId;
         pieceStatus[proposal.piece_cid.data] = Status.DealPublished;
         
-        uint256 gasFunds = AXELAR_GAS_FEE;
         int64 duration = CommonTypes.ChainEpoch.unwrap(proposal.end_epoch) - CommonTypes.ChainEpoch.unwrap(proposal.start_epoch);
         DataAttestation memory attest = DataAttestation(proposal.piece_cid.data, duration, mdnp.dealId, uint256(Status.DealPublished));
         bytes memory payload = abi.encode(attest);
+        call_axelar(payload, proposal.provider.data, AXELAR_GAS_FEE);
+    }
 
-        if (providerGasFunds[proposal.provider] >= AXELAR_GAS_FEE) {
-            providerGasFunds[proposal.provider] -= AXELAR_GAS_FEE;
+    function call_axelar(bytes memory payload, bytes memory providerAddrData, uint256 gasTarget) internal {
+        uint256 gasFunds = gasTarget;
+        if (providerGasFunds[providerAddrData] >= gasTarget) {
+            providerGasFunds[providerAddrData] -= gasTarget;
         } else {
-            gasFunds = providerGasFunds[proposal.provider];
-            providerGasFunds[proposal.provider] = 0;
+            gasFunds = providerGasFunds[providerAddrData];
+            providerGasFunds[providerAddrData] = 0;
         }
         gasService.payNativeGasForContractCall{value: gasFunds}(
             address(this),
@@ -101,7 +104,13 @@ contract DealClient is AxelarExecutable {
             payload,
             msg.sender
         );
-        gateway.callContract(this.destinationChain, this.destinationAddress, payload);
+        gateway.callContract(destinationChain, destinationAddress, payload);
+    }
+
+    function debug_call(bytes calldata commp, bytes calldata providerAddrData, uint256 gasFunds) public {
+        DataAttestation memory attest = DataAttestation(commp, 0, 42, uint256(Status.DealPublished));
+        bytes memory payload = abi.encode(attest);
+        call_axelar(payload, providerAddrData, gasFunds);
     }
 
     // handle_filecoin_method is the universal entry point for any evm based

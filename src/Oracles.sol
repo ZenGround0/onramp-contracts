@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
+import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
+
+
 interface IBridgeContract {
     function _execute(string calldata sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external;
 }
@@ -31,27 +34,61 @@ contract ForwardingProofMockBridge is IBridgeContract {
     }
 
     function _execute(string calldata _sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external override {
-       require(stringsEqual(_sourceChain_, "FIL"), "Only FIL proofs supported");   
-       require(stringsEqual(senderHex, sourceAddress_), "Only sender can execute");
+       require(StringsEqual(_sourceChain_, "FIL"), "Only FIL proofs supported");   
+       require(StringsEqual(senderHex, sourceAddress_), "Only sender can execute");
        DataAttestation memory attestation = abi.decode(payload_, (DataAttestation));
        IReceiveAttestation(receiver).proveDataStored(attestation);
     }
+}
 
-    function stringsEqual(string memory a, string memory b) internal pure returns (bool) {
-        bytes memory aBytes = bytes(a);
-        bytes memory bBytes = bytes(b);
+contract AxelarBridgeDebug is AxelarExecutable {
+    event ReceivedAttestation(bytes commP, string sourceAddress);
 
-        if (aBytes.length != bBytes.length) {
-            return false;
-        }
+    constructor(address _gateway) AxelarExecutable(_gateway){}
 
-        for (uint i = 0; i < aBytes.length; i++) {
-            if (aBytes[i] != bBytes[i]) {
-                return false;
-            }
-        }
-
-        return true;
+    function _execute(string calldata, string calldata sourceAddress_, bytes calldata payload_) internal override {
+        DataAttestation memory attestation = abi.decode(payload_, (DataAttestation));
+        emit ReceivedAttestation(attestation.commP, sourceAddress_);
     }
 }
 
+contract AxelarBridge is IBridgeContract {
+    address public receiver;
+    string public senderHex;
+
+    function setSenderReceiver(string calldata senderHex_, address receiver_) external {
+        receiver = receiver_;
+        senderHex = senderHex_;
+    }
+
+    function _execute(string calldata _sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external override {
+       require(StringsEqual(_sourceChain_, "filecoin-2"), "Only filecoin calibration net proofs supported");   
+       require(StringsEqual(senderHex, sourceAddress_), "Only registered sender addr can execute");
+       DataAttestation memory attestation = abi.decode(payload_, (DataAttestation));
+       IReceiveAttestation(receiver).proveDataStored(attestation);
+    }
+}
+
+contract DebugReceiver is IReceiveAttestation {
+    event ReceivedAttestation(bytes Commp);
+    function proveDataStored(DataAttestation calldata attestation_) external {
+        emit ReceivedAttestation(attestation_.commP);        
+    }
+}
+
+function StringsEqual(string memory a, string memory b) pure returns (bool) {
+    bytes memory aBytes = bytes(a);
+    bytes memory bBytes = bytes(b);
+
+    if (aBytes.length != bBytes.length) {
+        return false;
+    }
+
+    for (uint i = 0; i < aBytes.length; i++) {
+        if (aBytes[i] != bBytes[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
