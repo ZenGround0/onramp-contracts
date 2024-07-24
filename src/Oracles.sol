@@ -34,10 +34,20 @@ contract ForwardingProofMockBridge is IBridgeContract {
     }
 
     function _execute(string calldata _sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external override {
-       require(StringsEqual(_sourceChain_, "FIL"), "Only FIL proofs supported");   
+       require(StringsEqual(_sourceChain_, "filecoin-2") && block.chainid == 314159, "Only FIL proofs supported");   
        require(StringsEqual(senderHex, sourceAddress_), "Only sender can execute");
        DataAttestation memory attestation = abi.decode(payload_, (DataAttestation));
        IReceiveAttestation(receiver).proveDataStored(attestation);
+    }
+}
+
+contract DebugMockBridge is IBridgeContract {
+    event ReceivedAttestation(bytes commP, string sourceAddress);
+
+    function _execute(string calldata _sourceChain_, string calldata sourceAddress_, bytes calldata payload_) external override {
+       require(StringsEqual(_sourceChain_, "filecoin-2") && block.chainid == 314159, "Only FIL proofs supported");   
+        DataAttestation memory attestation = abi.decode(payload_, (DataAttestation));
+        emit ReceivedAttestation(attestation.commP, sourceAddress_);
     }
 }
 

@@ -15,14 +15,14 @@ import { Misc } from "lib/filecoin-solidity/contracts/v0.8/utils/Misc.sol";
 import { FilAddresses } from "lib/filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol";
 import { DataAttestation, IBridgeContract, StringsEqual } from "./Oracles.sol";
 import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
+import {Ownable} from "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
 import { IAxelarGateway } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
 import { IAxelarGasService } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol';
 
-
 using CBOR for CBOR.CBORBuffer;
 
-contract DealClient is AxelarExecutable {
+contract DealClient is AxelarExecutable, Ownable {
     using AccountCBOR for *;
     using MarketCBOR for *;
 
@@ -32,7 +32,13 @@ contract DealClient is AxelarExecutable {
     uint64 public constant MARKET_NOTIFY_DEAL_METHOD_NUM = 4186741094;
     address public constant MARKET_ACTOR_ETH_ADDRESS = address(0xff00000000000000000000000000000000000005);
     address public constant DATACAP_ACTOR_ETH_ADDRESS = address(0xfF00000000000000000000000000000000000007);
-    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with .1 FIL 
+    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with 1 FIL 
+
+
+    struct DestinationChain {
+        string chainName;
+        address destinationAddress;
+    }
 
     enum Status {
         None,
@@ -44,25 +50,14 @@ contract DealClient is AxelarExecutable {
     mapping(bytes => uint64) public pieceDeals; // commP -> deal ID
     mapping(bytes => Status) public pieceStatus;
     mapping(bytes => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
+    mapping(uint256 => DestinationChain) public chainIdToDestinationChain;
 
-    string public destinationAddress;
-    string public destinationChain;
-
-    constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) {
+    constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) Ownable(msg.sender) {
         gasService = IAxelarGasService(_gasReceiver);
     }
 
-    function setOracle(string calldata _destinationAddress, string calldata _destinationChain) external {
-        if (bytes(destinationAddress).length == 0 ) {
-            destinationAddress = _destinationAddress;
-        } else {
-            revert("Destination address already set");
-        }
-        if (bytes(destinationChain).length == 0) {
-            destinationChain = _destinationChain;
-        } else {
-            revert("Destination chain already set");
-        }
+    function setDestinationChain(uint chainId, string memory destinationChain, address destinationAddress) public onlyOwner {
+        chainIdToDestinationChain[chainId] = DestinationChain(destinationChain, destinationAddress);
     }
 
     function addGasFunds(bytes calldata providerAddrData) external payable {
@@ -84,12 +79,20 @@ contract DealClient is AxelarExecutable {
         pieceStatus[proposal.piece_cid.data] = Status.DealPublished;
         
         int64 duration = CommonTypes.ChainEpoch.unwrap(proposal.end_epoch) - CommonTypes.ChainEpoch.unwrap(proposal.start_epoch);
+        // Expects deal label to be chainId encoded in bytes
+        uint256 chainId = abi.decode(proposal.label.data, (uint256));
         DataAttestation memory attest = DataAttestation(proposal.piece_cid.data, duration, mdnp.dealId, uint256(Status.DealPublished));
         bytes memory payload = abi.encode(attest);
-        call_axelar(payload, proposal.provider.data, AXELAR_GAS_FEE);
+        if (chainId == block.chainid) {
+            IBridgeContract(chainIdToDestinationChain[chainId].destinationAddress)._execute(chainIdToDestinationChain[chainId].chainName, addressToHexString(address(this)), payload);
+        } else {
+            // If the chainId is not the current chain, we need to call the gateway
+            // to forward the message to the correct chain
+            call_axelar(payload, proposal.provider.data, AXELAR_GAS_FEE, chainId);
+        }
     }
 
-    function call_axelar(bytes memory payload, bytes memory providerAddrData, uint256 gasTarget) internal {
+    function call_axelar(bytes memory payload, bytes memory providerAddrData, uint256 gasTarget, uint256 chainId) internal {
         uint256 gasFunds = gasTarget;
         if (providerGasFunds[providerAddrData] >= gasTarget) {
             providerGasFunds[providerAddrData] -= gasTarget;
@@ -97,6 +100,8 @@ contract DealClient is AxelarExecutable {
             gasFunds = providerGasFunds[providerAddrData];
             providerGasFunds[providerAddrData] = 0;
         }
+        string memory destinationChain = chainIdToDestinationChain[chainId].chainName;
+        string memory destinationAddress = addressToHexString(chainIdToDestinationChain[chainId].destinationAddress);
         gasService.payNativeGasForContractCall{value: gasFunds}(
             address(this),
             destinationChain,
@@ -107,10 +112,16 @@ contract DealClient is AxelarExecutable {
         gateway.callContract(destinationChain, destinationAddress, payload);
     }
 
-    function debug_call(bytes calldata commp, bytes calldata providerAddrData, uint256 gasFunds) public {
+    function debug_call(bytes calldata commp, bytes calldata providerAddrData, uint256 gasFunds, uint256 chainId) public {
         DataAttestation memory attest = DataAttestation(commp, 0, 42, uint256(Status.DealPublished));
         bytes memory payload = abi.encode(attest);
-        call_axelar(payload, providerAddrData, gasFunds);
+        if (chainId == block.chainid) {
+            IBridgeContract(chainIdToDestinationChain[chainId].destinationAddress)._execute(chainIdToDestinationChain[chainId].chainName, addressToHexString(address(this)), payload);
+        } else {
+            // If the chainId is not the current chain, we need to call the gateway
+            // to forward the message to the correct chain
+            call_axelar(payload, providerAddrData, gasFunds, chainId);
+        }    
     }
 
     // handle_filecoin_method is the universal entry point for any evm based
