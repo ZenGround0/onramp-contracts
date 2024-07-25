@@ -15,14 +15,13 @@ import { Misc } from "lib/filecoin-solidity/contracts/v0.8/utils/Misc.sol";
 import { FilAddresses } from "lib/filecoin-solidity/contracts/v0.8/utils/FilAddresses.sol";
 import { DataAttestation, IBridgeContract, StringsEqual } from "./Oracles.sol";
 import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
-import {Ownable} from "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
 import { IAxelarGateway } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
 import { IAxelarGasService } from 'lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol';
 
 using CBOR for CBOR.CBORBuffer;
 
-contract DealClient is AxelarExecutable, Ownable {
+contract DealClient is AxelarExecutable {
     using AccountCBOR for *;
     using MarketCBOR for *;
 
@@ -52,11 +51,12 @@ contract DealClient is AxelarExecutable, Ownable {
     mapping(bytes => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
     mapping(uint256 => DestinationChain) public chainIdToDestinationChain;
 
-    constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) Ownable(msg.sender) {
+    constructor(address _gateway, address _gasReceiver) AxelarExecutable(_gateway) {
         gasService = IAxelarGasService(_gasReceiver);
     }
 
-    function setDestinationChain(uint chainId, string memory destinationChain, address destinationAddress) public onlyOwner {
+    function setDestinationChain(uint chainId, string calldata destinationChain, address destinationAddress) external {
+        require(chainIdToDestinationChain[chainId].destinationAddress == address(0), "Destination chains already configured for the chainId");
         chainIdToDestinationChain[chainId] = DestinationChain(destinationChain, destinationAddress);
     }
 
