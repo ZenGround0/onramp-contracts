@@ -631,8 +631,8 @@ func (a *aggregator) sendDeal(ctx context.Context, aggCommp cid.Cid, transferID 
 	dealUuid := uuid.New()
 	log.Printf("making deal for commp %s, UUID=%s\n", aggCommp.String(), dealUuid)
 	transferParams := boosttypes2.HttpRequest{
-		// TODO this address needs to be updated to the public IP and set up in the config
-		URL: fmt.Sprintf("http://localhost:%d/?id=%d", transferPort, transferID),
+
+		URL: fmt.Sprintf("http://%s/?id=%d", a.transferAddr, transferID),
 	}
 	paramsBytes, err := json.Marshal(transferParams)
 	if err != nil {
