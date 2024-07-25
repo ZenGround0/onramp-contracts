@@ -115,7 +115,7 @@ func main() {
 
 						fmt.Printf("Server starting on port %d\n", cfg.BufferPort)
 						server := &http.Server{
-							Addr:    fmt.Sprintf(":%d", cfg.BufferPort),
+							Addr:    fmt.Sprintf("0.0.0.0:%d", cfg.BufferPort),
 							Handler: nil, // http.DefaultServeMux
 						}
 						go func() {
@@ -234,6 +234,8 @@ type Config struct {
 	OnRampABIPath string
 	BufferPath    string
 	BufferPort    int
+	TransferIP    string
+	TransferPort  int
 	ProviderAddr  string
 	LotusAPI      string
 }
@@ -274,6 +276,7 @@ type aggregator struct {
 	transfers      map[int]AggregateTransfer // track aggregate data awaiting transfer
 	transferLk     sync.RWMutex              // Mutex protecting transfers map
 	transferID     int                       // ID of the next transfer
+	transferAddr   string                    // address to listen for transfer requests
 	targetDealSize uint64                    // how big aggregates should be
 	host           host.Host                 // libp2p host for deal protocol to boost
 	spDealAddr     *peer.AddrInfo            // address to reach boost (or other) deal v 1.2 provider
@@ -392,6 +395,7 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 		ch:             make(chan DataReadyEvent, 1024), // buffer many events since consumer sometimes waits for chain
 		transfers:      make(map[int]AggregateTransfer),
 		transferLk:     sync.RWMutex{},
+		transferAddr:   fmt.Sprintf("%s:%d", cfg.TransferIP, cfg.TransferPort),
 		abi:            parsedABI,
 		targetDealSize: targetSize,
 		host:           h,
@@ -445,7 +449,7 @@ func (a *aggregator) run(ctx context.Context) error {
 		http.HandleFunc("/", a.transferHandler)
 		fmt.Printf("Server starting on port %d\n", transferPort)
 		server := &http.Server{
-			Addr:    fmt.Sprintf(":%d", transferPort),
+			Addr:    a.transferAddr,
 			Handler: nil, // http.DefaultServeMux
 		}
 		go func() {
@@ -627,6 +631,7 @@ func (a *aggregator) sendDeal(ctx context.Context, aggCommp cid.Cid, transferID 
 	dealUuid := uuid.New()
 	log.Printf("making deal for commp %s, UUID=%s\n", aggCommp.String(), dealUuid)
 	transferParams := boosttypes2.HttpRequest{
+		// TODO this address needs to be updated to the public IP and set up in the config
 		URL: fmt.Sprintf("http://localhost:%d/?id=%d", transferPort, transferID),
 	}
 	paramsBytes, err := json.Marshal(transferParams)

@@ -32,7 +32,7 @@ contract DealClient is AxelarExecutable {
     uint64 public constant MARKET_NOTIFY_DEAL_METHOD_NUM = 4186741094;
     address public constant MARKET_ACTOR_ETH_ADDRESS = address(0xff00000000000000000000000000000000000005);
     address public constant DATACAP_ACTOR_ETH_ADDRESS = address(0xfF00000000000000000000000000000000000007);
-    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with 1 FIL 
+    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with .1 FIL 
 
     enum Status {
         None,
@@ -56,12 +56,12 @@ contract DealClient is AxelarExecutable {
         if (bytes(destinationAddress).length == 0 ) {
             destinationAddress = _destinationAddress;
         } else {
-            revert("Destination address already set 666");
+            revert("Destination address already set");
         }
         if (bytes(destinationChain).length == 0) {
             destinationChain = _destinationChain;
         } else {
-            revert("Destination chain already set 666");
+            revert("Destination chain already set");
         }
     }
 
