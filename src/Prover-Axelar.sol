@@ -31,7 +31,7 @@ contract DealClient is AxelarExecutable {
     uint64 public constant MARKET_NOTIFY_DEAL_METHOD_NUM = 4186741094;
     address public constant MARKET_ACTOR_ETH_ADDRESS = address(0xff00000000000000000000000000000000000005);
     address public constant DATACAP_ACTOR_ETH_ADDRESS = address(0xfF00000000000000000000000000000000000007);
-    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with 1 FIL 
+    uint256 public constant AXELAR_GAS_FEE = 100000000000000000; // Start with 0.1 FIL 
 
 
     struct DestinationChain {
@@ -55,9 +55,23 @@ contract DealClient is AxelarExecutable {
         gasService = IAxelarGasService(_gasReceiver);
     }
 
-    function setDestinationChain(uint chainId, string calldata destinationChain, address destinationAddress) external {
-        require(chainIdToDestinationChain[chainId].destinationAddress == address(0), "Destination chains already configured for the chainId");
-        chainIdToDestinationChain[chainId] = DestinationChain(destinationChain, destinationAddress);
+    function setDestinationChains(
+        uint[] calldata chainIds,
+        string[] calldata destinationChains,
+        address[] calldata destinationAddresses
+    ) external {
+        require(
+            chainIds.length == destinationChains.length && destinationChains.length == destinationAddresses.length,
+            "Input arrays must have the same length"
+        );
+    
+        for (uint i = 0; i < chainIds.length; i++) {
+            require(
+                chainIdToDestinationChain[chainIds[i]].destinationAddress == address(0),
+                "Destination chains already configured for the chainId"
+            );
+            chainIdToDestinationChain[chainIds[i]] = DestinationChain(destinationChains[i], destinationAddresses[i]);
+        }
     }
 
     function addGasFunds(bytes calldata providerAddrData) external payable {

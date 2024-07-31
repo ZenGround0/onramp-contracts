@@ -686,7 +686,7 @@ func (a *aggregator) sendDeal(ctx context.Context, aggCommp cid.Cid, transferID 
 			EndEpoch:             dealEnd,
 			StoragePricePerEpoch: fbig.NewInt(0),
 			ProviderCollateral:   providerCollateral,
-			Label:                dealLabel, // TOOD we might need to set this, we'll see
+			Label:                dealLabel,
 		},
 		// Signature is unchecked since client is smart contract
 		ClientSignature: crypto.Signature{
@@ -993,11 +993,11 @@ func loadPrivateKey(cfg *Config) (*bind.TransactOpts, error) {
 
 	// Import existing key
 	a, err := ks.Import(keyJSON, os.Getenv("XCHAIN_PASSPHRASE"), os.Getenv("XCHAIN_PASSPHRASE"))
-	if err := ks.Unlock(a, os.Getenv("XCHAIN_PASSPHRASE")); err != nil {
-		return nil, fmt.Errorf("failed to unlock keystore: %w", err)
-	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to import key %s: %w", cfg.ClientAddr, err)
+	}
+	if err := ks.Unlock(a, os.Getenv("XCHAIN_PASSPHRASE")); err != nil {
+		return nil, fmt.Errorf("failed to unlock keystore: %w", err)
 	}
 
 	return bind.NewKeyStoreTransactorWithChainID(ks, a, big.NewInt(int64(cfg.ChainID)))
