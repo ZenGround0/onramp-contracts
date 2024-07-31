@@ -6,14 +6,12 @@ import {Cid} from "./Cid.sol";
 import {TRUNCATOR} from "./Const.sol";
 import {DataAttestation} from "./Oracles.sol";
 
-
 // Adapted from https://github.com/lighthouse-web3/raas-starter-kit/blob/main/contracts/data-segment/Proof.sol
 // adapted rather than imported to
 //  1) avoid build issues
-//  2) avoid npm deps 
+//  2) avoid npm deps
 //3)  avoid use of deprecated @zondax/filecoin-solidity
 contract PODSIVerifier {
-
     // ProofData is a Merkle proof
     struct ProofData {
         uint64 index;
@@ -30,9 +28,18 @@ contract PODSIVerifier {
     }
 
     // computeRoot computes the root of a Merkle tree given a leaf and a Merkle proof.
-    function computeRoot(ProofData memory d, bytes32 subtree) internal pure returns (bytes32) {
-        require(d.path.length < 64, "merkleproofs with depths greater than 63 are not supported");
-        require(d.index >> d.path.length == 0, "index greater than width of the tree");
+    function computeRoot(
+        ProofData memory d,
+        bytes32 subtree
+    ) internal pure returns (bytes32) {
+        require(
+            d.path.length < 64,
+            "merkleproofs with depths greater than 63 are not supported"
+        );
+        require(
+            d.index >> d.path.length == 0,
+            "index greater than width of the tree"
+        );
 
         bytes32 carry = subtree;
         uint64 index = d.index;
@@ -51,7 +58,10 @@ contract PODSIVerifier {
     }
 
     // computeNode computes the parent node of two child nodes
-    function computeNode(bytes32 left, bytes32 right) internal pure returns (bytes32) {
+    function computeNode(
+        bytes32 left,
+        bytes32 right
+    ) internal pure returns (bytes32) {
         bytes32 digest = sha256(abi.encodePacked(left, right));
         return truncate(digest);
     }
@@ -63,9 +73,8 @@ contract PODSIVerifier {
     }
 }
 
-
 contract OnRampContract is PODSIVerifier {
-     struct Offer {
+    struct Offer {
         bytes commP;
         uint64 size;
         string location;
@@ -73,7 +82,7 @@ contract OnRampContract is PODSIVerifier {
         IERC20 token;
     }
     // Possible rearrangement:
-    // struct Hint {string location, uint64 size} ? 
+    // struct Hint {string location, uint64 size} ?
     // struct Payment {uint256 amount, IERC20 token}?
 
     event DataReady(Offer offer, uint64 id);
@@ -86,7 +95,6 @@ contract OnRampContract is PODSIVerifier {
     mapping(uint64 => bool) public provenAggregations;
     mapping(bytes => uint64) public commPToAggregateID;
 
-
     function setOracle(address oracle_) external {
         if (dataProofOracle == address(0)) {
             dataProofOracle = oracle_;
@@ -96,7 +104,10 @@ contract OnRampContract is PODSIVerifier {
     }
 
     function offerData(Offer calldata offer) external payable returns (uint64) {
-        require(offer.token.transferFrom(msg.sender, address(this), offer.amount), "Payment transfer failed");
+        require(
+            offer.token.transferFrom(msg.sender, address(this), offer.amount),
+            "Payment transfer failed"
+        );
 
         uint64 id = nextOfferId++;
         offers[id] = offer;
@@ -105,39 +116,66 @@ contract OnRampContract is PODSIVerifier {
         return id;
     }
 
-    function commitAggregate(bytes calldata aggregate, uint64[] calldata claimedIDs, ProofData[] calldata inclusionProofs, address payoutAddr) external {
+    function commitAggregate(
+        bytes calldata aggregate,
+        uint64[] calldata claimedIDs,
+        ProofData[] calldata inclusionProofs,
+        address payoutAddr
+    ) external {
         uint64[] memory offerIDs = new uint64[](claimedIDs.length);
         uint64 aggId = nextAggregateID++;
-        // Prove all offers are committed by aggregate commP 
+        // Prove all offers are committed by aggregate commP
         for (uint64 i = 0; i < claimedIDs.length; i++) {
             uint64 offerID = claimedIDs[i];
             offerIDs[i] = offerID;
-            require(verify(inclusionProofs[i], Cid.cidToPieceCommitment(aggregate), Cid.cidToPieceCommitment(offers[offerID].commP)), "Proof verification failed");
+            require(
+                verify(
+                    inclusionProofs[i],
+                    Cid.cidToPieceCommitment(aggregate),
+                    Cid.cidToPieceCommitment(offers[offerID].commP)
+                ),
+                "Proof verification failed"
+            );
         }
         aggregations[aggId] = offerIDs;
         aggregationPayout[aggId] = payoutAddr;
         commPToAggregateID[aggregate] = aggId;
     }
 
-    function verifyDataStored(uint64 aggID, uint idx, uint64 offerID) external view returns (bool) {
+    function verifyDataStored(
+        uint64 aggID,
+        uint idx,
+        uint64 offerID
+    ) external view returns (bool) {
         require(provenAggregations[aggID], "Provided aggregation not proven");
-        require(aggregations[aggID][idx] == offerID, "Aggregation does not include offer");
+        require(
+            aggregations[aggID][idx] == offerID,
+            "Aggregation does not include offer"
+        );
 
         return true;
     }
 
     // Called by oracle to prove the data is stored
-    function proveDataStored( DataAttestation calldata attestation) external {
-        require(msg.sender == dataProofOracle, "Only oracle can prove data stored");
+    function proveDataStored(DataAttestation calldata attestation) external {
+        require(
+            msg.sender == dataProofOracle,
+            "Only oracle can prove data stored"
+        );
         uint64 aggID = commPToAggregateID[attestation.commP];
         require(aggID != 0, "Aggregate not found");
 
         // transfer payment to the receiver
         for (uint i = 0; i < aggregations[aggID].length; i++) {
             uint64 offerID = aggregations[aggID][i];
-            require(offers[offerID].token.transfer(aggregationPayout[aggID], offers[offerID].amount), "Payment transfer failed");
-        }   
+            require(
+                offers[offerID].token.transfer(
+                    aggregationPayout[aggID],
+                    offers[offerID].amount
+                ),
+                "Payment transfer failed"
+            );
+        }
         provenAggregations[aggID] = true;
     }
 }
-
