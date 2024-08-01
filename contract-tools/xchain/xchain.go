@@ -238,6 +238,7 @@ type Config struct {
 	TransferPort  int
 	ProviderAddr  string
 	LotusAPI      string
+	TargetAggSize int
 }
 
 // Mirror OnRamp.sol's `Offer` struct
@@ -383,8 +384,6 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 		Addrs: maddrs,
 	}
 
-	// TODO this should be specified in config
-	targetSize := uint64(2 << 10)
 	return &aggregator{
 		client:         client,
 		onramp:         onramp,
@@ -397,7 +396,7 @@ func NewAggregator(ctx context.Context, cfg *Config) (*aggregator, error) {
 		transferLk:     sync.RWMutex{},
 		transferAddr:   fmt.Sprintf("%s:%d", cfg.TransferIP, cfg.TransferPort),
 		abi:            parsedABI,
-		targetDealSize: targetSize,
+		targetDealSize: uint64(cfg.TargetAggSize),
 		host:           h,
 		spDealAddr:     psPeerInfo,
 		spActorAddr:    providerAddr,
@@ -631,7 +630,6 @@ func (a *aggregator) sendDeal(ctx context.Context, aggCommp cid.Cid, transferID 
 	dealUuid := uuid.New()
 	log.Printf("making deal for commp %s, UUID=%s\n", aggCommp.String(), dealUuid)
 	transferParams := boosttypes2.HttpRequest{
-
 		URL: fmt.Sprintf("http://%s/?id=%d", a.transferAddr, transferID),
 	}
 	paramsBytes, err := json.Marshal(transferParams)
