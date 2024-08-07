@@ -516,7 +516,8 @@ func (a *aggregator) runAggregate(ctx context.Context) error {
 				latestPiece,
 			})
 			if err != nil {
-				log.Printf("skipping offer %d, size %d exceeds max PODSI packable size", latestEvent.OfferID, latestEvent.Offer.Size)
+				log.Printf("error creating aggregate: %s", err)
+				log.Printf("skipping offer %d, size %d exceeds max PODSI packable size %d", latestEvent.OfferID, latestEvent.Offer.Size, a.targetDealSize)
 				continue
 			}
 			// TODO: in production we'll maybe want to move data from buffer before we commit to storing it.
