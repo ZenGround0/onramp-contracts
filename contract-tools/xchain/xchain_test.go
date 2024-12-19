@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/filecoin-project/go-address"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -80,3 +81,22 @@ func decodeChainID(data []byte) (*big.Int, error) {
 
     return chainID, nil
 }
+
+func TestAddrToBytes(t *testing.T) {
+	    // Example address (replace with actual address)
+		addr, err := address.NewFromString("t0116147")
+		if err != nil {
+			fmt.Println("Error creating address:", err)
+			return
+		}
+	
+		// Get the byte representation of the address
+		addrBytes := addr.Bytes()
+	
+		// Encode the byte representation to a hexadecimal string
+		addrHex := hex.EncodeToString(addrBytes)
+		
+		fmt.Println("Address in bytes: ", addrBytes)
+		fmt.Println("Address in hex: ", addrHex)
+		assert.Equal(t, addrHex, "00b38b07", "Address does not match expected value")
+	}

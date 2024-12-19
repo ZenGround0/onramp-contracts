@@ -18,6 +18,7 @@ import {Strings} from "lib/openzeppelin-contracts/contracts/utils/Strings.sol";
 import {AxelarExecutable} from "lib/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol";
 import {IAxelarGateway} from "lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol";
 import {IAxelarGasService} from "lib/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol";
+import {BLAKE2b} from "./blake2lib.sol";
 
 using CBOR for CBOR.CBORBuffer;
 
@@ -51,6 +52,15 @@ contract DealClient is AxelarExecutable {
     mapping(bytes => Status) public pieceStatus;
     mapping(bytes => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
     mapping(uint256 => DestinationChain) public chainIdToDestinationChain;
+    event DealNotify(
+        uint64 dealId,
+        bytes commP,
+        bytes data,
+        bytes chainId,
+        bytes provider,
+        bytes payload
+    );
+    event ReceivedDataCap(string received);
 
     constructor(
         address _gateway,
@@ -87,6 +97,39 @@ contract DealClient is AxelarExecutable {
         providerGasFunds[providerAddrData] += msg.value;
     }
 
+    function receiveDataCap(bytes memory) internal {
+        require(
+            msg.sender == DATACAP_ACTOR_ETH_ADDRESS,
+            "msg.sender needs to be datacap actor f07"
+        );
+        emit ReceivedDataCap("DataCap Received!");
+        // Add get datacap balance api and store datacap amount
+    }
+
+    // authenticateMessage is the callback from the market actor into the contract
+    // as part of PublishStorageDeals. This message holds the deal proposal from the
+    // miner, which needs to be validated by the contract in accordance with the
+    // deal requests made and the contract's own policies
+    // @params - cbor byte array of AccountTypes.AuthenticateMessageParams
+    function authenticateMessage(bytes memory params) internal view {
+        require(
+            msg.sender == MARKET_ACTOR_ETH_ADDRESS,
+            "msg.sender needs to be market actor f05"
+        );
+
+        AccountTypes.AuthenticateMessageParams memory amp = params
+            .deserializeAuthenticateMessageParams();
+        MarketTypes.DealProposal memory proposal = MarketCBOR
+            .deserializeDealProposal(amp.message);
+        bytes memory encodedData = convertAsciiHexToBytes(proposal.label.data);
+        (, address filAddress) = abi.decode(encodedData, (uint256, address));
+        address recovered = recovers(
+            bytes32(BLAKE2b.hash(amp.message, "", "", "", 32)),
+            amp.signature
+        );
+        require(recovered == filAddress, "Invalid signature");
+    }
+
     // dealNotify is the callback from the market actor into the contract at the end
     // of PublishStorageDeals. This message holds the previously approved deal proposal
     // and the associated dealID. The dealID is stored as part of the contract state
@@ -109,7 +152,11 @@ contract DealClient is AxelarExecutable {
         int64 duration = CommonTypes.ChainEpoch.unwrap(proposal.end_epoch) -
             CommonTypes.ChainEpoch.unwrap(proposal.start_epoch);
         // Expects deal label to be chainId encoded in bytes
-        uint256 chainId = abi.decode(proposal.label.data, (uint256));
+        // string memory chainIdStr = abi.decode(proposal.label.data, (string));
+        bytes memory encodedData = convertAsciiHexToBytes(proposal.label.data);
+        (uint256 chainId, ) = abi.decode(encodedData, (uint256, address));
+
+        // uint256 chainId = asciiBytesToUint(proposal.label.data);
         DataAttestation memory attest = DataAttestation(
             proposal.piece_cid.data,
             duration,
@@ -117,6 +164,15 @@ contract DealClient is AxelarExecutable {
             uint256(Status.DealPublished)
         );
         bytes memory payload = abi.encode(attest);
+
+        emit DealNotify(
+            mdnp.dealId,
+            proposal.piece_cid.data,
+            params,
+            proposal.label.data,
+            proposal.provider.data,
+            payload
+        );
         if (chainId == block.chainid) {
             IBridgeContract(
                 chainIdToDestinationChain[chainId].destinationAddress
@@ -206,14 +262,16 @@ contract DealClient is AxelarExecutable {
         uint64 codec;
         // dispatch methods
         if (method == AUTHENTICATE_MESSAGE_METHOD_NUM) {
+            authenticateMessage(params);
             // If we haven't reverted, we should return a CBOR true to indicate that verification passed.
-            // Always authenticate message
             CBOR.CBORBuffer memory buf = CBOR.create(1);
             buf.writeBool(true);
             ret = buf.data();
             codec = Misc.CBOR_CODEC;
         } else if (method == MARKET_NOTIFY_DEAL_METHOD_NUM) {
             dealNotify(params);
+        } else if (method == DATACAP_RECEIVER_HOOK_METHOD_NUM) {
+            receiveDataCap(params);
         } else {
             revert("the filecoin method that was called is not handled");
         }
@@ -224,5 +282,72 @@ contract DealClient is AxelarExecutable {
         address _addr
     ) internal pure returns (string memory) {
         return Strings.toHexString(uint256(uint160(_addr)), 20);
+    }
+
+    function asciiBytesToUint(
+        bytes memory asciiBytes
+    ) public pure returns (uint256) {
+        uint256 result = 0;
+        for (uint256 i = 0; i < asciiBytes.length; i++) {
+            uint256 digit = uint256(uint8(asciiBytes[i])) - 48; // Convert ASCII to digit
+            require(digit <= 9, "Invalid ASCII byte");
+            result = result * 10 + digit;
+        }
+        return result;
+    }
+
+    function convertAsciiHexToBytes(
+        bytes memory asciiHex
+    ) public pure returns (bytes memory) {
+        require(asciiHex.length % 2 == 0, "Invalid ASCII hex string length");
+
+        bytes memory result = new bytes(asciiHex.length / 2);
+        for (uint256 i = 0; i < asciiHex.length / 2; i++) {
+            result[i] = byteFromHexChar(asciiHex[2 * i], asciiHex[2 * i + 1]);
+        }
+
+        return result;
+    }
+
+    function byteFromHexChar(
+        bytes1 char1,
+        bytes1 char2
+    ) internal pure returns (bytes1) {
+        uint8 nibble1 = uint8(char1) - (uint8(char1) < 58 ? 48 : 87);
+        uint8 nibble2 = uint8(char2) - (uint8(char2) < 58 ? 48 : 87);
+        return bytes1(nibble1 * 16 + nibble2);
+    }
+
+    function recovers(
+        bytes32 hash,
+        bytes memory signature
+    ) public pure returns (address) {
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+
+        // Check the signature length
+        if (signature.length != 65) {
+            return (address(0));
+        }
+
+        // Divide the signature in r, s and v variables
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+
+        // Version of signature should be 27 or 28, but 0 and 1 are also possible versions
+        if (v < 27) {
+            v += 27;
+        }
+        // address check = ECDSA.recover(hash, signature);
+        // If the version is correct return the signer address
+        if (v != 27 && v != 28) {
+            return (address(0));
+        } else {
+            return ecrecover(hash, v, r, s);
+        }
     }
 }
