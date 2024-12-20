@@ -52,6 +52,8 @@ contract DealClient is AxelarExecutable {
     mapping(bytes => uint256) public providerGasFunds; // Funds set aside for calling oracle by provider
     mapping(uint256 => DestinationChain) public chainIdToDestinationChain;
 
+    event ReceivedDataCap(string received);
+
     constructor(
         address _gateway,
         address _gasReceiver
@@ -85,6 +87,15 @@ contract DealClient is AxelarExecutable {
 
     function addGasFunds(bytes calldata providerAddrData) external payable {
         providerGasFunds[providerAddrData] += msg.value;
+    }
+
+    function receiveDataCap(bytes memory) internal {
+        require(
+            msg.sender == DATACAP_ACTOR_ETH_ADDRESS,
+            "msg.sender needs to be datacap actor f07"
+        );
+        emit ReceivedDataCap("DataCap Received!");
+        // Add get datacap balance api and store datacap amount
     }
 
     // dealNotify is the callback from the market actor into the contract at the end
@@ -214,6 +225,8 @@ contract DealClient is AxelarExecutable {
             codec = Misc.CBOR_CODEC;
         } else if (method == MARKET_NOTIFY_DEAL_METHOD_NUM) {
             dealNotify(params);
+        } else if (method == DATACAP_RECEIVER_HOOK_METHOD_NUM) {
+            receiveDataCap(params);
         } else {
             revert("the filecoin method that was called is not handled");
         }
